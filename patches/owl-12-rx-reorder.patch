@@ -1,0 +1,583 @@
+diff --git a/daemon/core.c b/daemon/core.c
+index db63db7..8f25b69 100644
+--- a/daemon/core.c
++++ b/daemon/core.c
+@@ -110,6 +110,55 @@ void host_device_ready(struct ev_loop *loop, ev_io *handle, int revents) {
+ 		awdl_send_unicast(loop, &state->ev_state.tx_timer, 0);
+ }
+ 
++static void reorder_deliver(struct buf *frame, void *arg) {
++	struct daemon_state *state = arg;
++	host_send(&state->io, buf_data(frame), buf_len(frame));
++	buf_free(frame);
++}
++
++/* What reordering needs from a received frame, read before awdl_rx strips it:
++ * for QoS data to us, the sender, TID and sequence number (returns 1); for a
++ * Block Ack Request to us, the same with the request's starting sequence
++ * number (returns 2); otherwise 0. */
++static int ba_frame_info(const uint8_t *buf, int len, const struct ether_addr *self,
++                         struct ether_addr *src, uint8_t *tid, uint16_t *sn) {
++	int rt_len;
++	const uint8_t *h;
++	uint16_t fc;
++
++	if (len < 4)
++		return 0;
++	rt_len = buf[2] | buf[3] << 8;
++	if (len < rt_len + 26)
++		return 0;
++	h = buf + rt_len;
++	fc = (uint16_t) (h[0] | h[1] << 8);
++	if (memcmp(h + 4, self, sizeof(*self)))
++		return 0;
++	memcpy(src, h + 10, sizeof(*src));
++	if ((fc & (IEEE80211_FCTL_FTYPE | IEEE80211_FCTL_STYPE)) == (IEEE80211_FTYPE_DATA | IEEE80211_STYPE_QOS_DATA)) {
++		if (fc & (IEEE80211_FCTL_TODS | IEEE80211_FCTL_FROMDS))
++			return 0;
++		*sn = (uint16_t) ((h[22] | h[23] << 8) >> 4);
++		*tid = h[24] & IEEE80211_QOS_CTL_TID_MASK;
++		return 1;
++	}
++	if ((fc & (IEEE80211_FCTL_FTYPE | IEEE80211_FCTL_STYPE)) == (IEEE80211_FTYPE_CTL | IEEE80211_STYPE_BACK_REQ)) {
++		/* RA, TA, BAR control (TID in bits 12-15), starting sequence control */
++		*tid = h[17] >> 4;
++		*sn = (uint16_t) ((h[18] | h[19] << 8) >> 4);
++		return 2;
++	}
++	return 0;
++}
++
++void awdl_reorder_tick(struct ev_loop *loop, ev_timer *timer, int revents) {
++	struct daemon_state *state = timer->data;
++	(void) loop;
++	(void) revents;
++	reorder_expire(&state->reorder, clock_time_us(), REORDER_TIMEOUT_US, reorder_deliver, state);
++}
++
+ static void awdl_send_addba_response(struct daemon_state *state) {
+ 	uint8_t buf[256];
+ 	const struct awdl_state *awdl = &state->awdl_state;
+@@ -123,6 +172,8 @@ static void awdl_send_addba_response(struct daemon_state *state) {
+ 	          (unsigned) ((awdl->addba.params >> 2) & 0xf), window);
+ 	wlan_send(&state->io, buf, len);
+ 	state->awdl_state.stats.tx_action++;
++	reorder_start(&state->reorder, &awdl->addba.peer, (uint8_t) ((awdl->addba.params >> 2) & 0xf),
++	              awdl_addba_window(awdl->addba.params), awdl->addba.ssn, reorder_deliver, state);
+ }
+ 
+ void awdl_receive_frame(uint8_t *user, const struct pcap_pkthdr *hdr, const uint8_t *buf) {
+@@ -132,9 +183,31 @@ void awdl_receive_frame(uint8_t *user, const struct pcap_pkthdr *hdr, const uint
+ 	const struct buf *frame = buf_new_const(buf, hdr->caplen);
+ 	struct buf *data_arr[MAX_NUM_AMPDU];
+ 	struct buf **data = &data_arr[0];
++	struct ether_addr ba_src;
++	uint8_t ba_tid = 0;
++	uint16_t ba_sn = 0;
++	int ba = state->awdl_state.accept_addba
++	         ? ba_frame_info(buf, (int) hdr->caplen, &state->awdl_state.self_address, &ba_src, &ba_tid, &ba_sn)
++	         : 0;
++
++	if (ba == 2) { /* a Block Ack Request: nothing for awdl_rx */
++		reorder_bar(&state->reorder, &ba_src, ba_tid, ba_sn, reorder_deliver, state);
++		buf_free(frame);
++		return;
++	}
+ 	result = awdl_rx(frame, &data, &data_arr[MAX_NUM_AMPDU], &state->awdl_state);
+ 	if (result == RX_ADDBA)
+ 		awdl_send_addba_response(state);
++	if (result == RX_DELBA)
++		reorder_stop(&state->reorder, &state->awdl_state.addba.peer, state->awdl_state.addba.tid,
++		             reorder_deliver, state);
++	/* In a Block Ack session the frames wait their turn (src/reorder.c). */
++	if (ba == 1 && result == RX_OK && data > data_arr &&
++	    reorder_rx(&state->reorder, &ba_src, ba_tid, ba_sn, data_arr, (int) (data - data_arr),
++	               clock_time_us(), reorder_deliver, state)) {
++		buf_free(frame);
++		return;
++	}
+ 	/* An A-MSDU that fails part way has converted the subframes before the
+ 	 * failure: free those too, unsent. */
+ 	for (struct buf **data_start = &data_arr[0]; data_start < data; data_start++) {
+@@ -718,6 +791,7 @@ int awdl_init(struct daemon_state *state, const char *wlan, const char *host, st
+ }
+ 
+ void awdl_free(struct daemon_state *state) {
++	reorder_free(&state->reorder);
+ 	circular_buf_free(state->tx_queue_multicast);
+ 	io_state_free(&state->io);
+ 	netutils_cleanup();
+@@ -747,6 +821,14 @@ void awdl_schedule(struct ev_loop *loop, struct daemon_state *state) {
+ 	ev_io_init(&state->ev_state.read_host, host_device_ready, state->io.host_fd, EV_READ);
+ 	ev_io_start(loop, &state->ev_state.read_host);
+ 
++	/* Receive reordering: release what a Block Ack session has held too long. */
++	reorder_init(&state->reorder);
++	if (state->awdl_state.accept_addba) {
++		state->ev_state.reorder_timer.data = (void *) state;
++		ev_timer_init(&state->ev_state.reorder_timer, awdl_reorder_tick, 0.02, 0.02);
++		ev_timer_start(loop, &state->ev_state.reorder_timer);
++	}
++
+ 	/* Periodic counters, so a stalled transfer can be attributed without a
+ 	 * second run. See awdl_stats_tick(). */
+ 	state->ev_state.stats_timer.data = (void *) state;
+diff --git a/daemon/core.h b/daemon/core.h
+index cb4d240..13112cf 100644
+--- a/daemon/core.h
++++ b/daemon/core.h
+@@ -26,10 +26,11 @@
+ #include "state.h"
+ #include "circular_buffer.h"
+ #include "io.h"
++#include "reorder.h"
+ 
+ struct ev_state {
+ 	struct ev_loop *loop;
+-	ev_timer mif_timer, psf_timer, tx_timer, tx_mcast_timer, chan_timer, peer_timer, stats_timer;
++	ev_timer mif_timer, psf_timer, tx_timer, tx_mcast_timer, chan_timer, peer_timer, stats_timer, reorder_timer;
+ 	ev_io read_wlan, read_host, read_chan_nl;
+ 	ev_signal stats;
+ };
+@@ -41,6 +42,7 @@ struct daemon_state {
+ 	struct ev_state ev_state;
+ 	struct buf *next;
+ 	cbuf_handle_t tx_queue_multicast;
++	struct reorder_state reorder; /* -A: Block Ack sessions' receive reordering */
+ 	const char *dump;
+ };
+ 
+@@ -79,4 +81,6 @@ void awdl_print_stats(struct ev_loop *loop, ev_signal *handle, int revents);
+ 
+ void awdl_stats_tick(struct ev_loop *loop, ev_timer *timer, int revents);
+ 
++void awdl_reorder_tick(struct ev_loop *loop, ev_timer *timer, int revents);
++
+ #endif /* OWL_CORE_H */
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index a18d637..ba26a4e 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -33,6 +33,8 @@ target_sources(awdl PRIVATE
+         siphash24.h
+         circular_buffer.c
+         circular_buffer.h
++        reorder.c
++        reorder.h
+ )
+ 
+ target_include_directories(awdl PRIVATE ${CMAKE_SOURCE_DIR}/radiotap)
+diff --git a/src/ieee80211.h b/src/ieee80211.h
+index 23c5812..a8dad9e 100644
+--- a/src/ieee80211.h
++++ b/src/ieee80211.h
+@@ -62,6 +62,7 @@ struct oui {
+ #define IEEE80211_CATEGORY_BACK		3
+ #define IEEE80211_ACTION_ADDBA_REQ	0
+ #define IEEE80211_ACTION_ADDBA_RESP	1
++#define IEEE80211_ACTION_DELBA		2
+ 
+ /* control */
+ #define IEEE80211_STYPE_CTL_EXT		0x0060
+diff --git a/src/reorder.c b/src/reorder.c
+new file mode 100644
+index 0000000..abb61bb
+--- /dev/null
++++ b/src/reorder.c
+@@ -0,0 +1,203 @@
++/*
++ * OWL: an open Apple Wireless Direct Link (AWDL) implementation
++ * Copyright (C) 2018  The Open Wireless Link Project (https://owlink.org)
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
++ */
++
++#include <string.h>
++
++#include "reorder.h"
++
++#define SN_MASK 0x0fff
++#define SN_HALF 0x0800
++
++/* How far sn is ahead of base, modulo the 12-bit sequence space; SN_HALF or
++ * more means it is behind. */
++static uint16_t sn_ahead(uint16_t sn, uint16_t base) {
++	return (uint16_t) ((sn - base) & SN_MASK);
++}
++
++static struct reorder_slot *slot_of(struct reorder_session *s, uint16_t sn) {
++	return &s->slot[sn % REORDER_WINDOW];
++}
++
++static void free_slot(struct reorder_slot *slot) {
++	for (int i = 0; i < slot->count; i++)
++		buf_free(slot->frames[i]);
++	slot->count = 0;
++}
++
++static void deliver_slot(struct reorder_session *s, struct reorder_slot *slot,
++                         reorder_deliver_cb deliver, void *arg) {
++	for (int i = 0; i < slot->count; i++)
++		deliver(slot->frames[i], arg);
++	slot->count = 0;
++	s->held--;
++}
++
++/* Deliver from head while the next frame is here. */
++static void release_in_order(struct reorder_session *s, reorder_deliver_cb deliver, void *arg) {
++	struct reorder_slot *slot;
++
++	while ((slot = slot_of(s, s->head))->count) {
++		deliver_slot(s, slot, deliver, arg);
++		s->head = (uint16_t) ((s->head + 1) & SN_MASK);
++	}
++}
++
++/* Move head to new_head, delivering what is held on the way and skipping
++ * the gaps, then whatever follows in order. */
++static void advance(struct reorder_session *s, uint16_t new_head, reorder_deliver_cb deliver, void *arg) {
++	while (s->head != new_head) {
++		struct reorder_slot *slot = slot_of(s, s->head);
++		if (slot->count)
++			deliver_slot(s, slot, deliver, arg);
++		s->head = (uint16_t) ((s->head + 1) & SN_MASK);
++	}
++	release_in_order(s, deliver, arg);
++}
++
++static void flush(struct reorder_session *s, reorder_deliver_cb deliver, void *arg) {
++	if (s->held)
++		advance(s, (uint16_t) ((s->head + s->size) & SN_MASK), deliver, arg);
++}
++
++static struct reorder_session *find(struct reorder_state *r, const struct ether_addr *peer, uint8_t tid) {
++	for (int i = 0; i < REORDER_SESSIONS; i++) {
++		struct reorder_session *s = &r->session[i];
++		if (s->active && s->tid == tid && !memcmp(&s->peer, peer, sizeof(*peer)))
++			return s;
++	}
++	return NULL;
++}
++
++void reorder_init(struct reorder_state *r) {
++	memset(r, 0, sizeof(*r));
++}
++
++void reorder_start(struct reorder_state *r, const struct ether_addr *peer, uint8_t tid, uint16_t size, uint16_t ssn,
++                   reorder_deliver_cb deliver, void *arg) {
++	struct reorder_session *s = find(r, peer, tid);
++
++	if (s) {
++		flush(s, deliver, arg);
++	} else {
++		for (int i = 0; i < REORDER_SESSIONS && !s; i++)
++			if (!r->session[i].active)
++				s = &r->session[i];
++		if (!s) {
++			/* Full: replace the first, delivering what it holds. */
++			s = &r->session[0];
++			flush(s, deliver, arg);
++		}
++	}
++	memset(s, 0, sizeof(*s));
++	s->active = 1;
++	s->peer = *peer;
++	s->tid = tid;
++	s->size = size == 0 || size > REORDER_WINDOW ? REORDER_WINDOW : size;
++	s->head = (uint16_t) (ssn & SN_MASK);
++}
++
++void reorder_stop(struct reorder_state *r, const struct ether_addr *peer, uint8_t tid,
++                  reorder_deliver_cb deliver, void *arg) {
++	struct reorder_session *s = find(r, peer, tid);
++
++	if (!s)
++		return;
++	flush(s, deliver, arg);
++	s->active = 0;
++}
++
++int reorder_rx(struct reorder_state *r, const struct ether_addr *peer, uint8_t tid, uint16_t sn,
++               struct buf **frames, int count, uint64_t now, reorder_deliver_cb deliver, void *arg) {
++	struct reorder_session *s = find(r, peer, tid);
++	struct reorder_slot *slot;
++	uint16_t ahead;
++
++	if (!s || count <= 0 || count > REORDER_MAX_FRAMES)
++		return 0;
++	sn &= SN_MASK;
++	ahead = sn_ahead(sn, s->head);
++	if (ahead >= SN_HALF) {
++		/* Behind the window: delivered already, or given up on. */
++		for (int i = 0; i < count; i++)
++			buf_free(frames[i]);
++		r->stats.dropped_old++;
++		return 1;
++	}
++	if (ahead >= s->size) /* past the window: it moves up so sn is its last */
++		advance(s, (uint16_t) ((sn - s->size + 1) & SN_MASK), deliver, arg);
++
++	slot = slot_of(s, sn);
++	if (slot->count) {
++		for (int i = 0; i < count; i++)
++			buf_free(frames[i]);
++		r->stats.dropped_duplicate++;
++		return 1;
++	}
++	if (sn != s->head)
++		r->stats.held++;
++	else if (s->held)
++		r->stats.delivered_late++; /* fills the gap others were waiting on */
++	memcpy(slot->frames, frames, sizeof(*frames) * count);
++	slot->count = count;
++	slot->since = now;
++	s->held++;
++	release_in_order(s, deliver, arg);
++	return 1;
++}
++
++void reorder_bar(struct reorder_state *r, const struct ether_addr *peer, uint8_t tid, uint16_t ssn,
++                 reorder_deliver_cb deliver, void *arg) {
++	struct reorder_session *s = find(r, peer, tid);
++	uint16_t ahead;
++
++	if (!s)
++		return;
++	ahead = sn_ahead((uint16_t) (ssn & SN_MASK), s->head);
++	if (ahead == 0 || ahead >= SN_HALF)
++		return;
++	if (s->held)
++		r->stats.released_by_bar++;
++	advance(s, (uint16_t) (ssn & SN_MASK), deliver, arg);
++}
++
++void reorder_expire(struct reorder_state *r, uint64_t now, uint64_t timeout_us,
++                    reorder_deliver_cb deliver, void *arg) {
++	for (int i = 0; i < REORDER_SESSIONS; i++) {
++		struct reorder_session *s = &r->session[i];
++		int last = -1;
++
++		if (!s->active || !s->held)
++			continue;
++		for (int k = 0; k < s->size; k++) {
++			struct reorder_slot *slot = slot_of(s, (uint16_t) ((s->head + k) & SN_MASK));
++			if (slot->count && now - slot->since >= timeout_us)
++				last = k;
++		}
++		if (last >= 0) {
++			r->stats.released_by_timeout++;
++			advance(s, (uint16_t) ((s->head + last + 1) & SN_MASK), deliver, arg);
++		}
++	}
++}
++
++void reorder_free(struct reorder_state *r) {
++	for (int i = 0; i < REORDER_SESSIONS; i++)
++		for (int k = 0; k < REORDER_WINDOW; k++)
++			free_slot(&r->session[i].slot[k]);
++	memset(r, 0, sizeof(*r));
++}
+diff --git a/src/reorder.h b/src/reorder.h
+new file mode 100644
+index 0000000..567d873
+--- /dev/null
++++ b/src/reorder.h
+@@ -0,0 +1,97 @@
++/*
++ * OWL: an open Apple Wireless Direct Link (AWDL) implementation
++ * Copyright (C) 2018  The Open Wireless Link Project (https://owlink.org)
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
++ */
++
++/*
++ * Receive reordering for a Block Ack session (802.11-2016 10.24.7), what
++ * mac80211 does for a station and nothing does for OWL's monitor interface.
++ * In an A-MPDU the subframes the receiver missed come again in a later
++ * burst, so without this they reach TCP behind the ones that followed them:
++ * with -A, 57% of an iPhone's segments arrived past a gap and 43% of our
++ * ACKs were duplicates (2026-10-14). Frames are held per peer and TID until
++ * the gap fills, the window moves past it, a Block Ack Request says the
++ * sender gave up on it, or it has waited REORDER_TIMEOUT_US.
++ */
++
++#ifndef AWDL_REORDER_H_
++#define AWDL_REORDER_H_
++
++#include <stdint.h>
++
++#include "wire.h"
++
++#define REORDER_SESSIONS 4
++#define REORDER_WINDOW 64 /* the most an ADDBA Response of ours offers */
++#define REORDER_MAX_FRAMES 16 /* per sequence number: an A-MSDU's subframes */
++#define REORDER_TIMEOUT_US 100000 /* mac80211's HT_RX_REORDER_BUF_TIMEOUT */
++
++typedef void (*reorder_deliver_cb)(struct buf *frame, void *arg);
++
++struct reorder_slot {
++	struct buf *frames[REORDER_MAX_FRAMES];
++	int count;
++	uint64_t since;
++};
++
++struct reorder_session {
++	int active;
++	struct ether_addr peer;
++	uint8_t tid;
++	uint16_t head; /* the next sequence number to deliver */
++	uint16_t size; /* the window agreed in the ADDBA Response */
++	int held;
++	struct reorder_slot slot[REORDER_WINDOW];
++};
++
++struct reorder_state {
++	struct reorder_session session[REORDER_SESSIONS];
++	struct {
++		unsigned long held, delivered_late, dropped_old, dropped_duplicate, released_by_timeout, released_by_bar;
++	} stats;
++};
++
++void reorder_init(struct reorder_state *r);
++
++/* Start (or restart) the session with peer for tid, the window size frames
++ * wide, from starting sequence number ssn (the ADDBA Request's). Frames held
++ * by a session it replaces are delivered first. */
++void reorder_start(struct reorder_state *r, const struct ether_addr *peer, uint8_t tid, uint16_t size, uint16_t ssn,
++                   reorder_deliver_cb deliver, void *arg);
++
++/* End the session (DELBA), delivering what it holds. */
++void reorder_stop(struct reorder_state *r, const struct ether_addr *peer, uint8_t tid,
++                  reorder_deliver_cb deliver, void *arg);
++
++/* A QoS data frame from peer for tid with sequence number sn, already
++ * converted to the count Ethernet frames in frames. Returns 0 if there is no
++ * session for it: the caller delivers the frames itself. Returns 1 if the
++ * frames were taken: delivered now, in order, held, or freed as stale. */
++int reorder_rx(struct reorder_state *r, const struct ether_addr *peer, uint8_t tid, uint16_t sn,
++               struct buf **frames, int count, uint64_t now, reorder_deliver_cb deliver, void *arg);
++
++/* A Block Ack Request: the sender won't send anything before ssn again. */
++void reorder_bar(struct reorder_state *r, const struct ether_addr *peer, uint8_t tid, uint16_t ssn,
++                 reorder_deliver_cb deliver, void *arg);
++
++/* Deliver what has waited timeout_us or longer, and everything before it. */
++void reorder_expire(struct reorder_state *r, uint64_t now, uint64_t timeout_us,
++                    reorder_deliver_cb deliver, void *arg);
++
++/* Free everything held, undelivered. */
++void reorder_free(struct reorder_state *r);
++
++#endif /* AWDL_REORDER_H_ */
+diff --git a/src/rx.c b/src/rx.c
+index a4b8694..05fe0e0 100644
+--- a/src/rx.c
++++ b/src/rx.c
+@@ -292,9 +292,21 @@ int awdl_rx_action(const struct buf *frame, signed char rssi, uint64_t tsft,
+ 			state->addba.token = body[2];
+ 			state->addba.params = (uint16_t) (body[3] | body[4] << 8);
+ 			state->addba.timeout = (uint16_t) (body[5] | body[6] << 8);
++			state->addba.ssn = (uint16_t) ((body[7] | body[8] << 8) >> 4);
+ 			return RX_ADDBA;
+ 		}
+ 	}
++	/* DELBA (action 2): parameter set, reason. TID in bits 12-15. */
++	if (buf_len(frame) >= 6) {
++		const uint8_t *body = buf_data(frame);
++		if (body[0] == IEEE80211_CATEGORY_BACK && body[1] == IEEE80211_ACTION_DELBA) {
++			if (!state->accept_addba || memcmp(dst, &state->self_address, sizeof(struct ether_addr)))
++				return RX_IGNORE;
++			state->addba.peer = *src;
++			state->addba.tid = (uint8_t) (body[3] >> 4);
++			return RX_DELBA;
++		}
++	}
+ 
+ 	subtype = awdl_parse_action_hdr(frame);
+ 	if (subtype < 0) {
+diff --git a/src/rx.h b/src/rx.h
+index 4cd9cfc..0d72661 100644
+--- a/src/rx.h
++++ b/src/rx.h
+@@ -25,6 +25,7 @@
+ #include "state.h"
+ 
+ enum RX_RESULT {
++	RX_DELBA = 8, /* a peer ended a Block Ack session: state->addba.peer, .tid */
+ 	RX_ADDBA = 7, /* a Block Ack session request to us, in state->addba: answer it */
+ 	RX_IGNORE_PEER = 6,
+ 	RX_IGNORE_RSSI = 5,
+diff --git a/src/state.h b/src/state.h
+index 191cf5a..1e1f5fc 100644
+--- a/src/state.h
++++ b/src/state.h
+@@ -85,6 +85,8 @@ struct awdl_state {
+ 		uint8_t token;
+ 		uint16_t params; /* Block Ack Parameter Set, as requested */
+ 		uint16_t timeout;
++		uint16_t ssn; /* starting sequence number */
++		uint8_t tid; /* of a DELBA */
+ 	} addba;
+ 	signed char rssi_threshold; /* peers exceeding this threshold are discovered */
+ 	signed char rssi_grace; /* once discovered accept lower RSSI */
+diff --git a/src/tx.c b/src/tx.c
+index ac38c2e..20b8326 100644
+--- a/src/tx.c
++++ b/src/tx.c
+@@ -438,14 +438,17 @@ int ieee80211_add_fcs(const uint8_t *start, uint8_t *end) {
+ 	return sizeof(uint32_t);
+ }
+ 
++uint16_t awdl_addba_window(uint16_t requested_params) {
++	uint16_t size = (requested_params >> 6) & 0x3ff;
++	return size == 0 || size > 64 ? 64 : size;
++}
++
+ int awdl_init_addba_response(uint8_t *buf, const struct awdl_state *state,
+                              struct ieee80211_state *ieee80211_state) {
+ 	uint8_t *ptr = buf;
+-	uint16_t size = (state->addba.params >> 6) & 0x3ff;
++	uint16_t size = awdl_addba_window(state->addba.params);
+ 	uint16_t params;
+ 
+-	if (size == 0 || size > 64)
+-		size = 64;
+ 	/* bit 0 A-MSDU supported (no), bit 1 immediate Block Ack, bits 2-5 TID,
+ 	 * bits 6-15 buffer size */
+ 	params = (uint16_t) ((state->addba.params & 0x003c) | 0x0002 | (size << 6));
+diff --git a/src/tx.h b/src/tx.h
+index 0f0c7ba..e33d8df 100644
+--- a/src/tx.h
++++ b/src/tx.h
+@@ -85,6 +85,9 @@ int ieee80211_init_radiotap_header(uint8_t *buf);
+ int awdl_init_addba_response(uint8_t *buf, const struct awdl_state *state,
+                              struct ieee80211_state *ieee80211_state);
+ 
++/* The window an ADDBA Response of ours offers for a requested parameter set. */
++uint16_t awdl_addba_window(uint16_t requested_params);
++
+ int ieee80211_init_radiotap_header_rate(uint8_t *buf, const struct ieee80211_tx_rate *rate);
+ 
+ int ieee80211_init_awdl_hdr(uint8_t *buf, const struct ether_addr *src, const struct ether_addr *dst,

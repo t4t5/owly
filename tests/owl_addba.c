@@ -99,6 +99,18 @@ int main(void) {
 	result = receive(&state, &other, raw, request(raw, 1, params_of(0, 0, 64), 0));
 	EXPECT(result == RX_IGNORE, "to another station: result %d, expected RX_IGNORE", result);
 
+	/* The starting sequence number is kept for the reorder buffer. */
+	result = receive(&state, &self, raw, request(raw, 1, params_of(0, 0, 64), 0));
+	EXPECT(result == RX_ADDBA && state.addba.ssn == 1, "starting sequence number %u, expected 1", state.addba.ssn);
+
+	/* DELBA: the peer ends the session for TID 6. */
+	{
+		const uint8_t delba[6] = {IEEE80211_CATEGORY_BACK, IEEE80211_ACTION_DELBA, 0x00, 0x60, 0x01, 0x00};
+		memcpy(raw, delba, sizeof(delba));
+		result = receive(&state, &self, raw, sizeof(delba));
+		EXPECT(result == RX_DELBA && state.addba.tid == 6, "DELBA: result %d TID %u", result, state.addba.tid);
+	}
+
 	/* Too short to be a request: falls through to the AWDL parser, which ignores it. */
 	result = receive(&state, &self, raw, 5);
 	EXPECT(result == RX_IGNORE, "truncated: result %d, expected RX_IGNORE", result);

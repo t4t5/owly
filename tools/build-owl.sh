@@ -31,6 +31,10 @@
 #   owl-11-rx-flags-init.patch  treat a missing radiotap Flags field as zero,
 #                           instead of reading an uninitialized byte
 #                           (tests/owl_rx_flags.c)
+#   owl-12-rx-reorder.patch  with -A, hold a Block Ack session's frames until
+#                           the gaps before them fill, as mac80211 does, so
+#                           TCP gets them in order (src/reorder.c,
+#                           tests/owl_reorder.c)
 # Applied in name order: each is a diff against the tree with the previous ones.
 set -eu
 
@@ -47,6 +51,9 @@ if [ ! -d "$DIR/.git" ]; then
 fi
 git -C "$DIR" fetch -q origin || true
 git -C "$DIR" checkout -q -- .
+# Files a patch adds (src/reorder.c) survive `checkout -- .`, and the next
+# build's apply then refuses to create them again: remove them, keep build/.
+git -C "$DIR" clean -fdq -e build
 git -C "$DIR" -c advice.detachedHead=false checkout -q "$OWL_COMMIT"
 git -C "$DIR" submodule update -q --init --recursive
 for p in "$ROOT"/patches/owl-*.patch; do
