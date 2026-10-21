@@ -6,6 +6,6 @@
 # OWL, from the airdrop-mt7921 fork: its -S channel-sequence strategies and
 # its fixes for iOS 26. patches/owl-*.patch apply to this commit.
 OWL_COMMIT=832d70f815c3d4a06a02117bf0fc5e868daa1ff0
-# omdrop-awdl, the Broadcom radio package (0.8.1): only its radio-independent
+# omdrop-awdl, the Broadcom radio package (0.10.0): only its radio-independent
 # tools are used, unmodified.
-OMDROP_AWDL_COMMIT=534f91a525337951ca19c311e53d333bd6d55100
+OMDROP_AWDL_COMMIT=e7891ab56957dde46f134c1991e4e4717f94d2e4

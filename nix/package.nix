@@ -33,7 +33,7 @@ let
     owner = "brentkearney";
     repo = "omdrop-awdl";
     rev = pin "OMDROP_AWDL_COMMIT";
-    hash = "sha256-GqxaM/5Qnj458AQPdHp1Jyfa6HK7tdybO6xDBbKUWc4=";
+    hash = "sha256-O1wKiexntsp5L3g9XeOT8s3s9+vepM9G7PCenkimKNk=";
   };
 
   python = python3.withPackages (ps: [
