@@ -54,7 +54,7 @@ const HOOKS: u32 = 1;
 /// The omdrop-awdl helper contract `omdrop-discoverable` follows, reported
 /// by `probe`: Omdrop's doctor wants one from every backend that probes. It
 /// is also the version of omdrop-awdl's tools installed beside the helper.
-const CONTRACT: &str = "0.8.1";
+const CONTRACT: &str = "0.10.0";
 
 /// The hooks' own run directory, with the window's lease. owlyd's is
 /// `/run/owly`.

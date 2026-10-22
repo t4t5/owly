@@ -36,7 +36,7 @@ fn probe_answers_without_root() {
     assert_eq!(json["backend"], "owl");
     // omdrop-awdl's helper contract, which Omdrop's doctor wants from
     // every backend.
-    assert_eq!(json["contract"], "0.8.1");
+    assert_eq!(json["contract"], "0.10.0");
     assert_eq!(json["hooks"], 1);
     assert_eq!(json["hardware"], true);
     assert_eq!(json["missing"], serde_json::json!([]));

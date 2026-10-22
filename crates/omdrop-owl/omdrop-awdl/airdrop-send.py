@@ -164,6 +164,12 @@ ap = argparse.ArgumentParser()
 # Optional, because --discover-only asks a peer for its name and sends nothing.
 ap.add_argument('files', nargs='*', metavar='file',
                 help='files to send, as one transfer the receiver accepts once')
+# A web link travels in the Ask itself, the way Safari on an iPhone sends one
+# to a receiver that advertises SUPPORTS_URL (2026-09-12): TransferType
+# `links`, the URL in Items, no Files and no /Upload. Sent as a .webloc file
+# instead, a Mac saves it to Downloads, where it opens as text (2026-10-10).
+ap.add_argument('--url', action='append', default=[], metavar='URL',
+                help='send this http(s) link instead of files; the receiver opens it in its browser')
 ap.add_argument('--iface', default='awdl0')
 ap.add_argument('--discover-only', action='store_true',
                 help='ask the peer for its name over /Discover, print it, and send nothing')
@@ -197,8 +203,13 @@ ap.add_argument('--keys', default=None,
                      'replaces the disk and self-signed keys location only')
 args = ap.parse_args()
 OP_TIMEOUT = args.op_timeout
-if not args.discover_only and not args.files:
-    ap.error('a file is required unless --discover-only')
+if not args.discover_only and not args.files and not args.url:
+    ap.error('a file or --url is required unless --discover-only')
+if args.url and args.files:
+    ap.error('send links and files separately: a transfer carries one or the other')
+for u in args.url:
+    if not u.lower().startswith(('http://', 'https://')) or any(c.isspace() for c in u):
+        ap.error(f'--url {u!r}: only an http or https link with no spaces')
 # The archive stores each file as "./<basename>", as sharingd does, so two
 # files with one name would land as one, and which survived would be luck.
 names = [os.path.basename(f) for f in args.files]
@@ -351,6 +362,29 @@ class AirDropClient:
             im.convert('RGB').save(buf, 'JPEG', quality=80); body['FileIcon'] = buf.getvalue()
         except Exception:
             pass
+        ok, resp = self.post('/Ask', plistlib.dumps(body, fmt=plistlib.FMT_BINARY))
+        log.info('%s ASK response %d B: %s', t(), len(resp), resp[:120])
+        return ok
+
+    def send_ask_links(self, urls):
+        """A links transfer: the Ask is the whole transfer. Shaped like the
+        iPhone's (2026-09-12, 2026-09-24): TransferType `links`, the URLs in
+        Items, and no Files, so nothing follows on /Upload."""
+        self.transfer_id = str(uuid.uuid4()).upper()
+        body = {
+            'TransferID': {'id': self.transfer_id},
+            'TransferType': {'links': {}},
+            'SenderID': self.config.service_id,
+            'BundleID': 'com.apple.Safari',
+            'SenderComputerName': self.config.computer_name,
+            'SenderModelName': self.config.computer_model,
+            'Items': list(urls),
+            'ConvertMediaFormats': False,
+        }
+        if self.config.record_data:
+            body['SenderRecordData'] = self.config.record_data
+        if args.auth_tag:
+            body['SenderIdentityAuthTag'] = bytes.fromhex(args.auth_tag)
         ok, resp = self.post('/Ask', plistlib.dumps(body, fmt=plistlib.FMT_BINARY))
         log.info('%s ASK response %d B: %s', t(), len(resp), resp[:120])
         return ok
@@ -576,13 +610,18 @@ client.http_conn.sock.settimeout(args.ask_timeout)
 # END ask-connection
 t1 = time.monotonic()
 try:
-    ok = client.send_ask(args.files)
+    ok = client.send_ask_links(args.url) if args.url else client.send_ask(args.files)
 except Exception as e:
     log.info('%s ASK failed: %r', t(), e)
     sys.exit(3)
 log.info('%s ASK -> %s (%.2fs)', t(), 'accepted' if ok else 'declined', time.monotonic() - t1)
 if not ok:
     sys.exit(3)
+if args.url:
+    # Accepting the Ask is the delivery: the receiver now opens the link.
+    what = args.url[0] if len(args.url) == 1 else f'{len(args.url)} links'
+    log.info('%s LINK %s -> ok', t(), what)
+    sys.exit(0)
 t1 = time.monotonic()
 size = sum(os.path.getsize(f) for f in args.files)
 try:

@@ -1,6 +1,6 @@
 # omdrop-awdl's tools
 
-The sending half of Omdrop's bash and Python version, and the announcer `omdrop-discoverable` runs, from [omdrop-awdl](https://github.com/netmojo-systems/omdrop-awdl) at commit `534f91a525337951ca19c311e53d333bd6d55100` (omdrop-awdl 0.8.1, helper contract 0.8.1). They're unmodified, and under omdrop-awdl's licence, GPL-2.0-only ([LICENSE](LICENSE); omdrop-awdl's README says its userspace helpers share its patches' licence). omdrop-owl 0.3.0 shipped the same files.
+The sending half of Omdrop's bash and Python version, and the announcer `omdrop-discoverable` runs, from [omdrop-awdl](https://github.com/netmojo-systems/omdrop-awdl) at commit `e7891ab56957dde46f134c1991e4e4717f94d2e4` (omdrop-awdl 0.10.0, helper contract 0.10.0). They're unmodified, and under omdrop-awdl's licence, GPL-2.0-only ([LICENSE](LICENSE); omdrop-awdl's README says its userspace helpers share its patches' licence). omdrop-owl 0.3.0 and 0.4.0 shipped them from `534f91a` (0.8.1), whose `send-to-peer` predates `--url`.
 
 | File | What it does |
 |---|---|

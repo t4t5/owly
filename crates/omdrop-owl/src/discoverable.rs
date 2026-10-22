@@ -1,6 +1,6 @@
 //! omdrop-awdl's helper, `omdrop-discoverable`, which Omdrop's bash and
 //! Python version runs through pkexec (`docs/radio-backend.md` in
-//! omdrop-plugin, helper contract 0.8.1). Where omdrop-core is installed,
+//! omdrop-plugin, helper contract 0.10.0). Where omdrop-core is installed,
 //! Omdrop runs the hooks instead; this is for Omdrop without it, until
 //! Omdrop retires that version.
 //!

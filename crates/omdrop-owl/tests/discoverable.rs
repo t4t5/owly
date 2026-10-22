@@ -1,4 +1,4 @@
-//! `omdrop-discoverable` against omdrop-awdl's helper contract (0.8.1,
+//! `omdrop-discoverable` against omdrop-awdl's helper contract (0.10.0,
 //! `docs/radio-backend.md` in omdrop-plugin), the way Omdrop's bash and
 //! Python version runs it: through pkexec, which clears the environment
 //! (here, under the test seam, without root), and as a client of a fake
@@ -56,7 +56,7 @@ fn probe_answers_as_the_hook_does() {
     assert_eq!(helper.stdout, hook.stdout);
     let json: serde_json::Value = serde_json::from_slice(&helper.stdout).unwrap();
     assert_eq!(json["backend"], "owl");
-    assert_eq!(json["contract"], "0.8.1");
+    assert_eq!(json["contract"], "0.10.0");
     assert_eq!(json["hardware"], true);
 }
 
@@ -252,4 +252,20 @@ fn the_seam_needs_its_variable() {
         .unwrap();
     assert_eq!(code(&o), 2);
     assert_eq!(fx.lease(), None);
+}
+
+#[test]
+fn the_sender_beside_the_helper_sends_links() {
+    // Omdrop's bash version sends links only when `send-to-peer --help` offers `--url`.
+    let o = std::process::Command::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/omdrop-awdl/send-to-peer"
+    ))
+    .arg("--help")
+    .env_clear()
+    .env("PATH", "/usr/bin:/bin")
+    .output()
+    .unwrap();
+    assert_eq!(code(&o), 0);
+    assert!(String::from_utf8_lossy(&o.stdout).contains("--url"));
 }
