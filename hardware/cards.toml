@@ -64,12 +64,11 @@ tested_on = [
     "ThinkBook 16 G7 IML, `10ec:c852`, Ubuntu 24.04.5 (kernel 7.0)",
 ]
 
-
 [[card]]
 name = "Realtek RTL8188FTV (USB)"
 driver = "rtl8xxxu"
 ids = ["0bda:f179"]
-status = "⚠️ Exclusive (opt-in); receiving works on ch 6 (~32-35 kB/s); sending requires BLE wake-up"
+status = "⚠️ Exclusive (opt-in)"
 tested_on = []
 
 [[card]]
