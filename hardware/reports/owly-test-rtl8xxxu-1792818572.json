@@ -4,7 +4,6 @@
   "kernel": "6.14.0-37-generic",
   "os": "Linux Mint 22.3",
   "machine": "INTEL H81",
-  "station": "wlxa047d7901aa6",
   "driver": "rtl8xxxu",
   "device": "0bda:f179",
   "status": "untested",
@@ -47,7 +46,7 @@
     {
       "step": "computer -> phone",
       "result": "fail",
-      "detail": "/usr/bin/owly send --to Nived Chandran /tmp/owly-test-1792818572.png exited with exit status: 2",
+      "detail": "/usr/bin/owly send exited with exit status: 2",
       "ms": 55515
     },
     {
