@@ -223,6 +223,9 @@ impl Setup<'_> {
             awdl.no_ack = no_ack;
         }
         awdl.amsdu = self.settings.tx_amsdu;
+        if let Some(metric) = self.settings.election_metric {
+            awdl.election_metric = Some(metric);
+        }
         Prepared {
             mode,
             awdl,

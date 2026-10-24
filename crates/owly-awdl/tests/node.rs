@@ -63,6 +63,7 @@ fn frame_from(
         sequence,
         election: &e,
         ht: Some(HtCapabilities::ONE_STREAM),
+        tuned: false,
     };
     frame::action_frame(mac, 1, kind, 0, |out| {
         tlv::put_all(out, &own, kind == subtype::MIF)
@@ -544,4 +545,31 @@ fn block_ack_sessions_are_accepted_only_when_asked_to() {
             .any(|f| f.to == PHONE && f.bytes[24] == 3 && f.bytes[25] == 1);
         assert_eq!(answered, accept);
     }
+}
+
+#[test]
+fn tuned_node_advertises_custom_metric_and_two_stream() {
+    let radio = RadioConstraints {
+        channel: Channel(6),
+        presence: Presence::Fixed,
+    };
+    let mut cfg = Config::new(US, "owly", radio);
+    cfg.election_metric = Some(550);
+    let mut n = Node::new(cfg, START);
+    let actions = tick(&mut n, START);
+    let frame = transmits(&actions)[0];
+    let tlvs = match frame::parse(&frame.bytes).unwrap() {
+        frame::Received::Action { tlvs, .. } => tlvs,
+        other => panic!("expected action frame, got {other:?}"),
+    };
+    let advert = tlv::Advert::parse(tlvs).unwrap();
+    let election = advert.election.unwrap();
+    assert_eq!(election.master_metric, 550);
+    assert_eq!(election.self_metric, 550);
+    let expected_counter = (START.micros() / 3_140_000) as u32;
+    assert_eq!(election.master_counter, expected_counter);
+    assert_eq!(election.self_counter, expected_counter);
+    let ht = advert.ht.unwrap();
+    assert_eq!(ht.capabilities, 0x11ee);
+    assert!(ht.sgi20());
 }

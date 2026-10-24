@@ -185,6 +185,14 @@ impl HtCapabilities {
         rx_mcs: 0xff,
     };
 
+    /// Two spatial streams (MCS 0..15) with Short Guard Interval (20 MHz)
+    /// for optimized PHY throughput.
+    pub const TWO_STREAM_SGI: HtCapabilities = HtCapabilities {
+        capabilities: 0x11ee,
+        ampdu_params: 0x1b,
+        rx_mcs: 0xffff,
+    };
+
     /// The mask may be longer than one byte; bits past MCS 31 are
     /// dropped.
     pub fn parse(value: &[u8]) -> Result<HtCapabilities, Error> {
@@ -352,6 +360,7 @@ pub struct Own<'a> {
     pub sequence: &'a Sequence,
     pub election: &'a crate::election::Election,
     pub ht: Option<HtCapabilities>,
+    pub tuned: bool,
 }
 
 fn tlv(out: &mut Vec<u8>, kind: u8, value: impl FnOnce(&mut Vec<u8>)) {
@@ -446,7 +455,7 @@ pub fn put_ht_capabilities(out: &mut Vec<u8>, ht: &HtCapabilities) {
         v.le16(ht.capabilities);
         v.u8(ht.ampdu_params);
         v.u8(ht.rx_mcs as u8);
-        v.le16(0);
+        v.le16((ht.rx_mcs >> 8) as u16);
     });
 }
 
@@ -454,7 +463,19 @@ pub fn put_ht_capabilities(out: &mut Vec<u8>, ht: &HtCapabilities) {
 /// channel in the social channel map, and our AWDL address.
 pub fn put_data_path_state(out: &mut Vec<u8>, own: &Own) {
     tlv(out, kind::DATA_PATH_STATE, |v| {
-        v.le16(0x8f24);
+        let (flags, ext_flags) = if own.tuned {
+            let mut f = 0xaf84;
+            let mut ext = 0x0000;
+            if own.master_channel.0 == 6 {
+                ext |= 0x0008;
+            } else {
+                f |= 0x0020;
+            }
+            (f, ext)
+        } else {
+            (0x8f24, 0x0000)
+        };
+        v.le16(flags);
         v.extend_from_slice(b"X0\0");
         v.le16(match own.master_channel.0 {
             6 => 0x0001,
@@ -462,7 +483,7 @@ pub fn put_data_path_state(out: &mut Vec<u8>, own: &Own) {
             _ => 0x0004,
         });
         v.mac(own.addr);
-        v.le16(0);
+        v.le16(ext_flags);
     });
 }
 
@@ -533,6 +554,7 @@ mod tests {
             sequence: &seq,
             election: &e,
             ht: Some(HtCapabilities::ONE_STREAM),
+            tuned: false,
         };
         let mut out = Vec::new();
         put_all(&mut out, &own, mif);
@@ -651,5 +673,44 @@ mod tests {
         let t = tlvs(&out).next().unwrap().unwrap();
         assert_eq!(parse_arpa(t.value).unwrap().len(), NAME_MAX);
         assert_eq!(parse_arpa(&[3, 10, b'a']), Err(Error::Truncated));
+    }
+
+    #[test]
+    fn tuned_tlvs() {
+        let mac = MacAddr([2, 0, 0, 0, 0, 1]);
+        let seq = Sequence::fixed(Channel(6));
+        let e = Election::own(mac);
+        let own = Own {
+            addr: mac,
+            name: "owly",
+            devclass: devclass::MACOS,
+            channel: 6,
+            master_channel: Channel(6),
+            next_tu: 20,
+            aw_counter: 401,
+            psf_interval_tu: 110,
+            sequence: &seq,
+            election: &e,
+            ht: Some(HtCapabilities::TWO_STREAM_SGI),
+            tuned: true,
+        };
+        let mut out = Vec::new();
+        put_data_path_state(&mut out, &own);
+        let tlv = tlvs(&out).next().unwrap().unwrap();
+        assert_eq!(tlv.kind, kind::DATA_PATH_STATE);
+        let b = Bytes(tlv.value);
+        assert_eq!(b.le16(0).unwrap(), 0xaf84);
+        assert_eq!(b.le16(13).unwrap(), 0x0008);
+
+        let mut ht_out = Vec::new();
+        put_ht_capabilities(&mut ht_out, &HtCapabilities::TWO_STREAM_SGI);
+        let ht_tlv = tlvs(&ht_out).next().unwrap().unwrap();
+        assert_eq!(ht_tlv.kind, kind::HT_CAPABILITIES);
+        let hb = Bytes(ht_tlv.value);
+        assert_eq!(hb.le16(2).unwrap(), 0x11ee);
+        assert_eq!(hb.u8(4).unwrap(), 0x1b);
+        assert_eq!(hb.u8(5).unwrap(), 0xff);
+        assert_eq!(hb.le16(6).unwrap(), 0x00ff);
+        assert!(HtCapabilities::TWO_STREAM_SGI.sgi20());
     }
 }
