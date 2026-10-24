@@ -1,0 +1,64 @@
+{
+  "owly": "0.4.0",
+  "time": 1792818572,
+  "kernel": "6.14.0-37-generic",
+  "os": "Linux Mint 22.3",
+  "machine": "INTEL H81",
+  "station": "wlxa047d7901aa6",
+  "driver": "rtl8xxxu",
+  "device": "0bda:f179",
+  "status": "untested",
+  "mode": "exclusive",
+  "channel": 6,
+  "transfers": "owly",
+  "steps": [
+    {
+      "step": "probe",
+      "result": "pass",
+      "detail": "ready"
+    },
+    {
+      "step": "NetworkManager",
+      "result": "pass",
+      "detail": "leaves Owly's interfaces alone"
+    },
+    {
+      "step": "baseline",
+      "result": "skipped",
+      "detail": "Wi-Fi has no default route"
+    },
+    {
+      "step": "start",
+      "result": "pass",
+      "ms": 164
+    },
+    {
+      "step": "phone heard",
+      "result": "pass"
+    },
+    {
+      "step": "shown on the phone",
+      "result": "pass"
+    },
+    {
+      "step": "phone -> computer",
+      "result": "pass"
+    },
+    {
+      "step": "computer -> phone",
+      "result": "fail",
+      "detail": "/usr/bin/owly send --to Nived Chandran /tmp/owly-test-1792818572.png exited with exit status: 2",
+      "ms": 55515
+    },
+    {
+      "step": "stop",
+      "result": "pass",
+      "ms": 133
+    }
+  ],
+  "wifi": {
+    "baseline": null,
+    "window": null,
+    "after": null
+  }
+}

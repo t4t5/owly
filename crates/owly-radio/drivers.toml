@@ -179,3 +179,13 @@ status = "untested"
 mode = "shared"
 reconnect_after_monitor = true
 notes = "Any other card. Needs monitor-mode injection while associated, and an AP on channel 6, 44 or 149."
+
+[drivers.rtl8xxxu]
+status = "tested"
+mode = "exclusive"
+channels = [6]
+issues = [
+    "This card is single-band 2.4 GHz only, so AirDrop runs on Channel 6 with limited time slots (transfer speed ~32-35 kB/s; ~75s for 2.5 MB).",
+    "Sending to an iPhone requires a Bluetooth adapter for BLE wake-up.",
+]
+notes = "Realtek RTL8188FTV (0bda:f179, kernel 6.14.0-37-generic). 2.4 GHz only. Phone -> Computer AirDrop transfer tested and working in exclusive mode via hidden AP."
