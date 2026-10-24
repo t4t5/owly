@@ -79,6 +79,56 @@ sudo systemctl daemon-reload && sudo nmcli general reload conf
 
 </details>
 
+<details>
+<summary>On Windows (WSL 2, a USB MT7612U)</summary>
+
+Windows' own Wi-Fi drivers can't do AWDL, but WSL 2's kernel ships `mt76x2u`
+(and `cfg80211`, `mac80211`, `tun`, `vhci-hcd`) as modules, and
+[usbipd-win](https://github.com/dorssel/usbipd-win) hands a USB stick to it.
+Tested on Windows 11 with WSL 3.0.3 (kernel 6.18.54) and usbipd-win 5.3.
+
+1. `winget install usbipd`, then in an administrator terminal `usbipd list`
+   and `usbipd bind --busid <BUSID>` for the `0e8d:7612` stick (once).
+2. In the distro, before attaching, give the kernel its firmware. WSL loads
+   firmware outside the distro, so the distro's `/lib/firmware` isn't searched;
+   `/mnt/wsl` is shared, and `firmware_class.path` points there:
+
+   ```sh
+   sudo apt install wireless-regdb          # regulatory.db and its signature
+   sudo mkdir -p /mnt/wsl/firmware
+   # mt7662.bin and mt7662_rom_patch.bin from linux-firmware's mediatek/,
+   # saved without the folder: the driver asks for them by those names
+   sudo cp mt7662.bin mt7662_rom_patch.bin /lib/firmware/regulatory.db* /mnt/wsl/firmware/
+   printf /mnt/wsl/firmware | sudo tee /sys/module/firmware_class/parameters/path
+   sudo modprobe mt76x2u && sudo modprobe tun
+   ```
+
+   (On Debian the upstream-signed copies, the ones WSL's kernel accepts, are
+   `regulatory.db-upstream` and `regulatory.db.p7s-upstream`: copy those as
+   `regulatory.db` and `regulatory.db.p7s`.)
+
+   The regulatory database matters: without it the country stays `00`,
+   5 GHz channels are No IR, OWL can't transmit on 149 and the iPhone never
+   shows the PC.
+3. `usbipd attach --wsl --busid <BUSID>`: `dmesg` shows the ROM patch and
+   firmware load, and `iw phy` lists active monitor.
+
+What was tested is `omdrop-discoverable` (exclusive mode, active monitor on
+149), OWL with `patches/` and omdrop's receiver, run as root in a Debian 12
+distro (the [HowlDrop](https://github.com/MrSco/howl-drop) image), with a local
+`dbus-daemon` and no NetworkManager; not the `.deb` and `omdrop` CLI, whose
+polkit and systemd pieces WSL may not run. Receiving works: a photo in about a
+second, a 30 MB video in 7 s. Sending to an iPhone needs the BLE wake, and
+WSL has no Bluetooth; Windows can send the same advert itself (WinRT's
+`BluetoothLEAdvertisementPublisher`, manufacturer data `0x004C`, the
+`ble-airdrop-adv.py` arm A payload), and then sending works too. HowlDrop
+packages all of this, wake included, as one Windows app.
+
+The first attaches hung after the chip's MCU reset (`vendor request ...
+failed:-110`, then the stick drops off USB) and needed a replug each time,
+until one went through; the cause is unknown.
+</details>
+
 ## Usage
 
 Start the radio in your terminal:
@@ -112,7 +162,7 @@ Make sure you set your phone's Airdrop setting to "Everyone for 10 minutes".
 | Card | Driver | Status | Tested on |
 |---|---|---|---|
 | MediaTek MT7925 | `mt7925e` | ✅ Shared | Framework 13, `14c3:0717`, Omarchy 4.0.4 (kernel 7.2.5) |
-| MediaTek MT7612U (USB) | `mt76x2u` | ✅ Exclusive | `0e8d:7612` (kernel 7.2.9) |
+| MediaTek MT7612U (USB) | `mt76x2u` | ✅ Exclusive | • `0e8d:7612` (kernel 7.2.9)<br>• Windows 11, WSL 2 (kernel 6.18.54) through usbipd-win ([how](#install)) |
 | Realtek RTL8822BE | `rtw88_8822be` | ✅ Exclusive; shared untested | Crosshair VII Hero, `10ec:b822`, NixOS 26.11 (kernel 7.2.9) |
 | Realtek RTL8852AE | `rtw89_8852ae` | ✅ Shared (opt-in) | ThinkPad P14s Gen 2a, `10ec:8852`, Ubuntu 26.04.1 (kernel 7.0) |
 | Realtek RTL8852BE | `rtw89_8852be` | ✅ Shared (opt-in) | ASUS PRIME B550M-A WIFI II, `10ec:b852`, CachyOS (kernel 7.2.9) |
