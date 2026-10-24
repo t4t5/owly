@@ -158,6 +158,11 @@ status = "untested"
 mode = "exclusive"
 notes = "Realtek RTL8852BU (USB, 35bc:0108, kernel 7.2.9), as a second card beside a connected built-in one. No ad-hoc mode: runs beside a hidden AP. Both directions on channel 149; nothing heard on 44, which that iPhone never used. Ships in USB storage mode (0bda:1a2b) until usb_modeswitch."
 
+[drivers.rtw89_8922ae]
+status = "untested"
+mode = "exclusive"
+notes = "Realtek RTL8922AE (ASUS ProArt B850-CREATOR WIFI NEO, 10ec:8922, kernel 7.3.0), with country IL in radio.toml and the station idle on a machine on Ethernet. No ad-hoc mode: runs a hidden AP. Both directions with an iPhone on channel 44."
+
 [drivers.rtl8xxxu]
 status = "untested"
 mode = "exclusive"

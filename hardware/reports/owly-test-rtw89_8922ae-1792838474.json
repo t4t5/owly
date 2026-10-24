@@ -1,0 +1,63 @@
+{
+  "owly": "0.4.0",
+  "time": 1792838474,
+  "kernel": "7.3.0-5-cachyos",
+  "os": "CachyOS",
+  "machine": "ASUS System Version",
+  "station": "wlan0",
+  "driver": "rtw89_8922ae",
+  "device": "10ec:8922",
+  "status": "untested",
+  "mode": "exclusive",
+  "channel": 44,
+  "transfers": "owly",
+  "steps": [
+    {
+      "step": "probe",
+      "result": "pass",
+      "detail": "ready"
+    },
+    {
+      "step": "NetworkManager",
+      "result": "pass",
+      "detail": "leaves Owly's interfaces alone"
+    },
+    {
+      "step": "baseline",
+      "result": "skipped",
+      "detail": "Wi-Fi has no default route"
+    },
+    {
+      "step": "start",
+      "result": "pass",
+      "ms": 1354
+    },
+    {
+      "step": "phone heard",
+      "result": "pass"
+    },
+    {
+      "step": "shown on the phone",
+      "result": "pass"
+    },
+    {
+      "step": "phone -> computer",
+      "result": "pass"
+    },
+    {
+      "step": "computer -> phone",
+      "result": "pass",
+      "ms": 3743
+    },
+    {
+      "step": "stop",
+      "result": "pass",
+      "ms": 1967
+    }
+  ],
+  "wifi": {
+    "baseline": null,
+    "window": null,
+    "after": null
+  }
+}

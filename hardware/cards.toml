@@ -65,6 +65,13 @@ tested_on = [
 ]
 
 [[card]]
+name = "Realtek RTL8922AE"
+driver = "rtw89_8922ae"
+ids = ["10ec:8922"]
+status = "✅ Exclusive (opt-in)"
+tested_on = []
+
+[[card]]
 name = "Realtek RTL8188FTV (USB)"
 driver = "rtl8xxxu"
 ids = ["0bda:f179"]
