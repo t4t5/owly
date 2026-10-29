@@ -37,7 +37,9 @@
 #                legacy did on every fixed radio, false in shared mode). A
 #                peer visits a fixed radio's channel for a slot or two, and a
 #                frame retried past the visit holds up every frame behind it;
-#                Intel and MT76x2U TX status also stalls after channel changes
+#                Intel and MT76x2U TX status also stalls after channel changes.
+#                Asked for in the frame too (QoS Ack Policy No Ack), since
+#                iwlwifi's TX path on AX210 and later ignores radiotap's flag
 #   supports_tx_ldpc
 #                the driver can LDPC-encode injected frames, for owly-awdl's
 #                rate selection (not used yet)

@@ -315,6 +315,28 @@ pub fn data_frame(src: MacAddr, dst: MacAddr, seq: u16, awdl_seq: u16, packet: &
     out
 }
 
+/// QoS control: TID 0, Ack Policy No Ack.
+const QOS_NO_ACK: u16 = 0x0020;
+
+/// AWDL-13: a QoS data frame (TID 0) carrying one IPv6 packet, whose Ack
+/// Policy asks for no ACK. That reaches the hardware with the frame, where
+/// radiotap's no-ACK flag may not: iwlwifi's newer TX path (AX210 and
+/// later) drops it, and the firmware then retries a frame the peer left
+/// its channel without answering, holding up every frame behind it.
+pub fn no_ack_data_frame(
+    src: MacAddr,
+    dst: MacAddr,
+    seq: u16,
+    awdl_seq: u16,
+    packet: &[u8],
+) -> Vec<u8> {
+    let mut out = Vec::with_capacity(HEADER_LEN + 2 + DATA_HEADER_LEN + packet.len());
+    put_header(&mut out, fc::QOS_DATA, dst, src, seq);
+    out.le16(QOS_NO_ACK);
+    put_msdu(&mut out, awdl_seq, packet);
+    out
+}
+
 /// The bytes one packet adds to an A-MSDU, less the up to 3 bytes of
 /// padding that may come before it.
 pub fn amsdu_subframe_len(packet_len: usize) -> usize {
@@ -381,6 +403,33 @@ mod tests {
 
     const A: MacAddr = MacAddr([0x02, 0, 0, 0, 0, 0x01]);
     const B: MacAddr = MacAddr([0x86, 0x08, 0x04, 0x8a, 0x2b, 0xf4]);
+
+    // spec: AWDL-13
+    #[test]
+    fn a_no_ack_data_frame_is_qos_data_asking_for_no_ack() {
+        let packet = [0x60, 0, 0, 0, 0, 0, 0x3b, 0x40];
+        let frame = no_ack_data_frame(A, B, 0x123, 7, &packet);
+        assert_eq!(&frame[..2], &[0x88, 0x00], "QoS data");
+        assert_eq!(
+            &frame[HEADER_LEN..HEADER_LEN + 2],
+            &[0x20, 0x00],
+            "TID 0, No Ack"
+        );
+        let plain = data_frame(A, B, 0x123, 7, &packet);
+        assert_eq!(&frame[2..HEADER_LEN], &plain[2..HEADER_LEN]);
+        assert_eq!(&frame[HEADER_LEN + 2..], &plain[HEADER_LEN..]);
+        let Received::Data {
+            header,
+            amsdu,
+            body,
+        } = parse(&frame).unwrap()
+        else {
+            panic!("not data");
+        };
+        assert!(!amsdu);
+        let m = msdus(&header, amsdu, body).unwrap();
+        assert_eq!((m.len(), m[0].dst, m[0].payload), (1, B, &packet[..]));
+    }
 
     // spec: AWDL-13, T-AWDL-2
     #[test]
