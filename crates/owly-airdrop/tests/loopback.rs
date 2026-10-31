@@ -631,6 +631,7 @@ veth_test! {
         let socket = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP)).unwrap();
         socket.set_only_v6(true).unwrap();
         socket.set_reuse_address(true).unwrap();
+        #[cfg(all(unix, not(target_os = "solaris"), not(target_os = "illumos")))]
         socket.set_reuse_port(true).unwrap();
         let any = std::net::SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, mdns::MDNS_PORT));
         socket.bind(&any.into()).unwrap();
