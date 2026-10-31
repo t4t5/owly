@@ -1,0 +1,79 @@
+{
+  "owly": "0.4.1",
+  "time": 1793210633,
+  "kernel": "7.3.0-1-default",
+  "os": "openSUSE Tumbleweed",
+  "machine": "ASUSTeK COMPUTER INC. ASUS Vivobook 14 X1404VAPBF_X1404VA",
+  "driver": "rtw89_8851be",
+  "device": "10ec:b851",
+  "status": "untested",
+  "mode": "shared",
+  "channel": 44,
+  "transfers": "owly",
+  "steps": [
+    {
+      "step": "probe",
+      "result": "pass",
+      "detail": "ready"
+    },
+    {
+      "step": "NetworkManager",
+      "result": "pass",
+      "detail": "leaves Owly's interfaces alone"
+    },
+    {
+      "step": "baseline",
+      "result": "pass",
+      "detail": "10/10 replies"
+    },
+    {
+      "step": "start",
+      "result": "pass",
+      "ms": 33
+    },
+    {
+      "step": "phone heard",
+      "result": "pass"
+    },
+    {
+      "step": "shown on the phone",
+      "result": "pass"
+    },
+    {
+      "step": "phone -> computer",
+      "result": "pass"
+    },
+    {
+      "step": "computer -> phone",
+      "result": "pass",
+      "ms": 2832
+    },
+    {
+      "step": "stop",
+      "result": "pass",
+      "ms": 5804
+    },
+    {
+      "step": "Wi-Fi after teardown",
+      "result": "pass",
+      "detail": "300/300 replies, longest gap 0 s"
+    }
+  ],
+  "wifi": {
+    "baseline": {
+      "sent": 10,
+      "received": 10,
+      "longest_gap_s": 0
+    },
+    "window": {
+      "sent": 88,
+      "received": 88,
+      "longest_gap_s": 0
+    },
+    "after": {
+      "sent": 300,
+      "received": 300,
+      "longest_gap_s": 0
+    }
+  }
+}

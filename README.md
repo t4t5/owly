@@ -114,6 +114,7 @@ Make sure you set your phone's Airdrop setting to "Everyone for 10 minutes".
 | MediaTek MT7925 | `mt7925e` | ✅ Shared | Framework 13, `14c3:0717`, Omarchy 4.0.4 (kernel 7.2.5) |
 | MediaTek MT7612U (USB) | `mt76x2u` | ✅ Exclusive | `0e8d:7612` (kernel 7.2.9) |
 | Realtek RTL8822BE | `rtw88_8822be` | ✅ Exclusive; shared untested | Crosshair VII Hero, `10ec:b822`, NixOS 26.11 (kernel 7.2.9) |
+| Realtek RTL8851BE | `rtw89_8851be` | ✅ Shared | ASUSTeK COMPUTER INC. ASUS Vivobook 14 X1404VAPBF_X1404VA, `10ec:b851`, openSUSE Tumbleweed (kernel 7.3.0) |
 | Realtek RTL8852AE | `rtw89_8852ae` | ✅ Shared (opt-in) | • ThinkPad P14s Gen 2a, `10ec:8852`, Ubuntu 26.04.1 (kernel 7.0)<br>• LENOVO ThinkPad T14 Gen 2a, `10ec:8852`, Omarchy (kernel 7.2.8) |
 | Realtek RTL8852BE | `rtw89_8852be` | ✅ Shared (opt-in) | ASUS PRIME B550M-A WIFI II, `10ec:b852`, CachyOS (kernel 7.2.9) |
 | Realtek RTL8852CE | `rtw89_8852ce` | ✅ Shared and exclusive (opt-in) | • Legion Slim 5 16AHP9, `10ec:c852`, Omarchy 4.0.4 (kernel 7.2.5)<br>• ThinkBook 16 G7 IML, `10ec:c852`, Ubuntu 24.04.5 (kernel 7.0) |

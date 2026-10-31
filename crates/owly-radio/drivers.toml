@@ -136,6 +136,12 @@ issues = [
 ]
 notes = "Realtek RTL8821CE (HP laptop, 10ec:c821, kernel 7.2.5)."
 
+[drivers.rtw89_8851be]
+status = "tested"
+mode = "shared"
+reconnect_after_monitor = true
+notes = "Realtek RTL8851BE (ASUS Vivobook 14 X1404VA, 10ec:b851, kernel 7.3.0). Both directions on channel 44. Wi-Fi stayed up during the session and for the five minutes watched after teardown, with the reconnect. Whether reconnect is needed is untested."
+
 [drivers.rtw89_8852ae]
 status = "untested"
 mode = "shared"
