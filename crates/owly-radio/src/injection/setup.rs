@@ -141,6 +141,13 @@ impl Setup<'_> {
         if self.settings.country.is_none() && self.station.tx_channels(self.settings).is_empty() {
             return Err(no_channels());
         }
+        // Without one in radio.toml, the country the kernel has from the AP:
+        // it forgets it once the station is down, and the world's domain
+        // left in its place allows no cell on 5 GHz.
+        let country = self.settings.country.clone().or_else(|| {
+            ops.regdom()
+                .filter(|c| c.len() == 2 && c.bytes().all(|b| b.is_ascii_uppercase()))
+        });
 
         // What to reconnect to afterwards; it has to be read while
         // connected. NetworkManager has to let go of the station, or it
@@ -157,7 +164,7 @@ impl Setup<'_> {
         // once they're gone.
         self.mt76()?;
 
-        self.regdom()?;
+        self.regdom(country)?;
         let freqs = self.station.tx_channels(self.settings);
         if freqs.is_empty() {
             return Err(no_channels());
@@ -282,8 +289,8 @@ impl Setup<'_> {
     /// Asks for `country`'s regulatory domain and waits for the kernel to
     /// apply it, then reads the channels it allows. A driver that manages
     /// its own (Intel's LAR) ignores the request, so it isn't made.
-    fn regdom(&mut self) -> Result<(), Error> {
-        let Some(country) = self.settings.country.clone() else {
+    fn regdom(&mut self, country: Option<String>) -> Result<(), Error> {
+        let Some(country) = country else {
             return Ok(());
         };
         let ops = self.ops;

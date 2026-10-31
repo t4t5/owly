@@ -4,7 +4,7 @@
 //! station = "wlan0"        # the Wi-Fi interface to use; else the first station
 //! allow_untested = false   # run on a card the quirks table doesn't mark tested
 //! reconnect_after = true   # overrides the driver's reconnect_after_monitor
-//! country = "DE"           # exclusive modes: the regulatory domain to ask for
+//! country = "DE"           # exclusive modes: the regulatory domain to ask for, else the AP's
 //! channels = [6]           # exclusive modes: overrides the driver's channel order
 //! aggregation = true       # overrides the driver's rx_ampdu: accept the phone's Block Ack session
 //! tx_rate = "mcs7"         # the data frame rate
@@ -14,8 +14,10 @@
 //!
 //! `country` matters where the kernel's regulatory domain is the world's
 //! (`00`), which allows no transmitting on 5 GHz: exclusive mode asks for it
-//! and waits for the kernel to apply it before choosing a channel. Shared
-//! mode follows the AP's.
+//! and waits for the kernel to apply it before choosing a channel. Without
+//! it, exclusive mode asks for the country the kernel had from the AP, which
+//! it forgets once the station is down; a station that isn't connected has
+//! none to keep. Shared mode follows the AP's.
 
 use std::path::{Path, PathBuf};
 
