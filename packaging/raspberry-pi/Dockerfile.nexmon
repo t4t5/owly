@@ -1,0 +1,13 @@
+FROM debian:trixie-slim
+
+RUN dpkg --add-architecture armhf \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+      autoconf binutils bison build-essential ca-certificates cmake dpkg-dev \
+      file flex gawk git libgmp3-dev libssl-dev libtool make python3 qpdf \
+      texinfo xxd zlib1g-dev \
+      libc6:armhf libisl23:armhf libmpfr6:armhf libmpc3:armhf \
+      libstdc++6:armhf \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src

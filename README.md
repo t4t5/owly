@@ -2,7 +2,7 @@
 
 https://github.com/user-attachments/assets/b195ce4c-e078-49be-bc13-44a72b6dc189
 
-AirDrop between iPhones and Linux devices whose Wi-Fi isn't Apple's Broadcom chip.
+AirDrop between iPhones and Linux devices with a radio that can capture and inject AWDL frames.
 
 See [supported hardware](#supported-hardware).
 
@@ -141,6 +141,48 @@ Make sure you set your phone's Airdrop setting to "Everyone for 10 minutes".
 <!-- hardware-table:end -->
 
 One card name can cover chips that behave differently, so a report from a machine, PCI ID (`lspci -nn`) or kernel not listed here helps too.
+
+### Raspberry Pi onboard Wi-Fi with Nexmon
+
+The [Raspberry Pi OS install guide](docs/raspberry-pi-os.md) covers the two
+ARM64 Debian packages and a source build. The [download page](https://lab.syso.codes/owlyfuk/)
+shows package availability. The Nexmon package builds the patched firmware
+locally from the Pi's installed stock image and builds the kernel module for
+the running 6.18 Pi 2712 kernel; it does not contain a modified firmware blob.
+
+The experimental `firmware-monitor-shared` mode uses a Nexmon-patched `brcmfmac` driver and firmware. It keeps the station connected and runs AWDL on its access point's channel. Stock Raspberry Pi firmware does not expose the monitor capture and frame injection this radio path uses. [Kali's Raspberry Pi Nexmon packages](https://www.kali.org/blog/raspberry-pi-wi-fi-glow-up/) have been tested for monitor mode and injection on these boards:
+
+| Board | Onboard Wi-Fi | Nexmon prerequisite |
+|---|---|---|
+| Raspberry Pi 5 | CYW43455 | Kali 64-bit Pi image |
+| Raspberry Pi 4 | CYW43455 | Kali 32-bit or 64-bit Pi image |
+| Raspberry Pi 3B | CYW43430 | Kali 32-bit or 64-bit Pi image |
+| Raspberry Pi Zero 2 W | BCM43436s variant | Kali Pi image with matching firmware |
+| Raspberry Pi Zero W | BCM43430 | Kali Pi image with matching firmware |
+
+A wireless CM5 has a CYW43455 and can use the same mode, but it is not in Kali's tested board list. A CM5 without wireless needs another compatible Wi-Fi card. Owly has no completed AirDrop hardware report for any of these onboard radios yet. The table records Nexmon prerequisites, not verified AirDrop support.
+
+On a supported Kali Raspberry Pi image, install the patched driver and firmware, then reboot:
+
+```sh
+sudo apt update
+sudo apt install brcmfmac-nexmon-dkms firmware-nexmon
+sudo reboot
+```
+
+On stock Raspberry Pi OS (formerly Raspbian), the [onboard Wi-Fi installation guide](docs/raspberry-pi-os.md) gives source build, install, verification, and rollback commands for a Pi 5 or wireless CM5 on 64-bit Trixie with kernel 6.18 and CYW43455 firmware 7.45.265. This uses a [still-open Nexmon monitor/injection port](https://github.com/seemoo-lab/nexmon/pull/692), so it remains experimental until tested on the boards. Other kernels, firmware versions, and Pi models require their own matching Nexmon build. Do not add Kali package repositories to Raspberry Pi OS; their kernel modules and firmware are matched to Kali's images.
+
+Build and install Owly on the Pi from this checkout using the [source instructions](#from-source). For the onboard radio, set `/etc/owly/radio.toml` to:
+
+```toml
+station = "wlan0"
+allow_untested = true
+channels = [44, 149, 6]
+```
+
+Use the interface name shown by `iw dev` if it differs from `wlan0`. Connect the Pi to an access point on channel 6, 44, or 149; shared mode cannot retune a connected station to another channel. Run `owly doctor` first: it must report `firmware-monitor-shared` and the access point's social channel. Then run `owly radio up`, and use `owly receive` or `owly send` in another terminal. Owly leaves the onboard Wi-Fi connection up in this mode, but throughput and coexistence still need physical testing. Keep Ethernet available during initial tests. Keep `owlymon0` free for Owly rather than creating it with `airmon-ng` first. `owly test-card` records whether discovery and transfers work in both directions. A monitor interface and a successful injection self-test alone do not establish AirDrop compatibility.
+
+For a different Raspberry Pi radio implementation, `owly-awdl` provides the portable AWDL frame and scheduling logic, `owly-radio` owns the Linux monitor/TAP path and recovery journal, and `owly-airdrop` handles discovery and transfers above `awdl0`. The shared firmware monitor setup is in `crates/owly-radio/src/injection/setup.rs`; driver policy is in `crates/owly-radio/drivers.toml`. A new radio backend can implement `owly_radio::radio::Backend` without changing the AirDrop protocol code.
 
 ### Checking your card
 

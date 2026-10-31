@@ -19,7 +19,10 @@
 #                an ad-hoc cell on AWDL's BSSID in its place, or a hidden AP
 #                on a card with no ad-hoc mode. "active-monitor": Wi-Fi is
 #                down, with an active monitor in its place, for cards with
-#                neither
+#                neither. "firmware-monitor": Wi-Fi is down, with capture
+#                and injection on a firmware-backed monitor interface
+#                "firmware-monitor-shared": a firmware-backed monitor beside
+#                the connected station, fixed to the AP's social channel
 #   reconnect_after_monitor
 #                force a reconnect after deleting the monitor interface, for
 #                drivers whose station stops receiving after that (default
@@ -187,6 +190,15 @@ issues = [
     "This Qualcomm card hears nothing from the phone in shared mode (https://github.com/t4t5/owly/issues/40). Exclusive mode is untested.",
 ]
 notes = "Qualcomm WCN7850 (FastConnect 7800, 17cb:1107, Fedora 44, kernel 7.2.9)."
+
+[drivers.brcmfmac]
+status = "untested"
+mode = "firmware-monitor-shared"
+channels = [44, 149, 6]
+issues = [
+    "The stock brcmfmac firmware cannot inject AWDL frames. Shared mode needs a matching Nexmon driver and firmware, a Wi-Fi connection on channel 6, 44, or 149, and hardware validation.",
+]
+notes = "Nexmon-capable onboard Wi-Fi on Raspberry Pi 5, Pi 4, Pi 3B, Zero 2 W, Zero W and wireless CM5. Opt-in only. The patched driver and matching firmware must expose a monitor interface with injection; two-way AirDrop still needs board-specific testing."
 
 [drivers."*"]
 status = "untested"

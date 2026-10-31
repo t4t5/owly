@@ -1,0 +1,8 @@
+FROM rust:1.88-slim-bookworm
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+      build-essential ca-certificates dpkg-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src

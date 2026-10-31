@@ -66,6 +66,11 @@ pub enum Mode {
     Exclusive,
     /// Wi-Fi down for the session, an active monitor in its place.
     ActiveMonitor,
+    /// Firmware-backed monitor injection on one fixed channel, without a
+    /// mac80211 ad-hoc cell or active-monitor ACKs.
+    FirmwareMonitor,
+    /// Firmware-backed monitor injection beside an associated station.
+    FirmwareMonitorShared,
 }
 
 impl fmt::Display for Mode {
@@ -74,6 +79,8 @@ impl fmt::Display for Mode {
             Mode::Shared => "shared",
             Mode::Exclusive => "exclusive",
             Mode::ActiveMonitor => "active-monitor",
+            Mode::FirmwareMonitor => "firmware-monitor",
+            Mode::FirmwareMonitorShared => "firmware-monitor-shared",
         })
     }
 }
@@ -178,8 +185,9 @@ mod tests {
         assert!(q.reconnect_after_monitor && q.mt76_pm_off);
 
         let (q, source) = quirks.get("brcmfmac", None);
-        assert_eq!(source, Source::Fallback);
+        assert_eq!(source, Source::Driver);
         assert_eq!(q.status, Status::Untested);
+        assert_eq!(q.mode, Mode::FirmwareMonitorShared);
     }
 
     #[test]

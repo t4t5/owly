@@ -44,7 +44,7 @@ fn main() -> ExitCode {
             "--run-dir" => &mut run_dir,
             "--fake" => &mut fake,
             "-h" | "--help" => {
-                println!("{USAGE}");
+                println!("{USAGE}\n{}", env!("OWLY_BUILD_ID"));
                 return ExitCode::SUCCESS;
             }
             _ => {

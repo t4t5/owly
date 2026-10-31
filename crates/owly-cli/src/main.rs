@@ -28,7 +28,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "owly", version, about)]
+#[command(name = "owly", version, about, after_help = env!("OWLY_BUILD_ID"))]
 struct Cli {
     /// The bus owlyd is on, when it isn't the system bus.
     #[arg(long, global = true, hide = true)]

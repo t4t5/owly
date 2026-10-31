@@ -1,0 +1,68 @@
+#!/bin/bash
+set -euo pipefail
+
+[ "${1:-}" = configure ] || exit 0
+PACKAGE=owly-nexmon-rpi5
+SOURCE=/usr/src/owly-nexmon-rpi5-0.1/nexmon
+FIRMWARE=/lib/firmware/cypress/cyfmac43455-sdio.bin
+STOCK=/lib/firmware/cypress/cyfmac43455-sdio-standard.bin
+PATCHED=/lib/firmware/nexmon/cyfmac43455-sdio-standard.bin
+KERNEL=$(uname -r)
+EXPECTED_SHA256=d608f866582519c0a28d86db43040f4f1b98dd1d153e72e9752586546b4a36c3
+
+case "$KERNEL" in
+  6.18.*rpi-2712) ;;
+  *) echo "$PACKAGE: requires a running 6.18 Raspberry Pi 2712 kernel, found $KERNEL" >&2; exit 1 ;;
+esac
+MODEL=$(tr -d '\000' < /proc/device-tree/model)
+case "$MODEL" in
+  *"Raspberry Pi 5"* | *"Compute Module 5"*) ;;
+  *) echo "$PACKAGE: unsupported board: $MODEL" >&2; exit 1 ;;
+esac
+BUILD=/lib/modules/$KERNEL/build
+[ -d "$BUILD" ] || { echo "$PACKAGE: install headers matching $KERNEL" >&2; exit 1; }
+[ -f "$SOURCE/setup_env.sh" ] || { echo "$PACKAGE: Nexmon source is missing" >&2; exit 1; }
+
+[ -e "$STOCK" ] || { echo "$PACKAGE: stock CYW43455 firmware is missing" >&2; exit 1; }
+update-alternatives --query cyfmac43455-sdio.bin >/dev/null 2>&1 || {
+  echo "$PACKAGE: stock firmware alternatives are unavailable" >&2; exit 1;
+}
+STOCK_SHA256=$(sha256sum "$STOCK" | cut -d ' ' -f 1)
+if [ "$STOCK_SHA256" != "$EXPECTED_SHA256" ]; then
+  echo "$PACKAGE: stock firmware does not match the supported 7.45.265 image" >&2
+  exit 1
+fi
+
+WORK=$(mktemp -d)
+trap 'rm -rf "$WORK"' EXIT
+cp -R "$SOURCE/." "$WORK/"
+touch "$WORK/DISABLE_STATISTICS"
+FIRMWARE_SOURCE=$WORK/firmwares/bcm43455c0/7_45_265-28bca26-CY
+PATCH=$WORK/patches/bcm43455c0/7_45_265-28bca26-CY/nexmon
+DRIVER=$WORK/patches/driver/brcmfmac_6.18.y-nexmon
+install -m 644 "$STOCK" "$FIRMWARE_SOURCE/cyfmac43455-sdio-standard.bin"
+mkdir -p "$WORK/buildtools/armhf-compat-libs"
+ln -s "$(readlink -f /usr/lib/arm-linux-gnueabihf/libisl.so.23)" \
+  "$WORK/buildtools/armhf-compat-libs/libisl.so.10"
+ln -s "$(readlink -f /usr/lib/arm-linux-gnueabihf/libmpfr.so.6)" \
+  "$WORK/buildtools/armhf-compat-libs/libmpfr.so.4"
+cd "$WORK"
+set +u
+source setup_env.sh
+set -u
+"${CC}gcc" --version >/dev/null
+make -C buildtools/flash_patch_extractor
+make -C "$FIRMWARE_SOURCE"
+make -C "$PATCH" GIT_VERSION=7adfdb8d firmware-only
+[ -s "$PATCH/cyfmac43455-sdio-standard.bin" ] || {
+  echo "$PACKAGE: firmware patch build produced no image" >&2; exit 1;
+}
+make -C "$BUILD" M="$DRIVER" ARCH=arm64 -j2 modules
+[ -s "$DRIVER/brcmfmac.ko" ] || { echo "$PACKAGE: module build produced no brcmfmac.ko" >&2; exit 1; }
+install -D -m 644 "$DRIVER/brcmfmac.ko" "/lib/modules/$KERNEL/updates/owly-nexmon/brcmfmac.ko"
+depmod -a "$KERNEL"
+install -D -m 644 "$PATCH/cyfmac43455-sdio-standard.bin" "$PATCHED"
+
+update-alternatives --install "$FIRMWARE" cyfmac43455-sdio.bin "$PATCHED" 30
+update-alternatives --set cyfmac43455-sdio.bin "$PATCHED"
+echo "$PACKAGE: module and firmware installed for $KERNEL; reboot before use"

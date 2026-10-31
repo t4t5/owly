@@ -11,5 +11,9 @@ other-libs
 
 # Cargo build output.
 /target/
+TODO.md
+STRUCTURE.md
+dist/
+target-arm64/
 
 .readme-preview.html

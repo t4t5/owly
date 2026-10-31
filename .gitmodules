@@ -1,0 +1,4 @@
+[submodule "third_party/nexmon"]
+	path = third_party/nexmon
+	url = https://github.com/kimocoder/nexmon.git
+	branch = monitor-injection-k7.2

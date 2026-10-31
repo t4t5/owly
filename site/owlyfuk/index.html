@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#080b16">
+  <title>OWLYFUK // AirDrop escaped the orchard</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="noise" aria-hidden="true"></div><div class="grid" aria-hidden="true"></div>
+  <header class="topbar"><a class="wordmark" href="#top"><span class="eye">◉</span> OWLY<span>FUK</span><span class="cursor">_</span></a><span class="top-status"><span class="live-dot"></span> EXPERIMENTAL DOWNLOAD / 0.4.1</span><a class="top-link" href="https://github.com/DatanoiseTV/owly/tree/feature/rpi-nexmon">SOURCE ↗</a></header>
+  <main id="top">
+    <section class="hero">
+      <div class="eyebrow">[ UNSANCTIONED FRUIT TRANSFER LAB ]</div>
+      <div class="hero-layout"><div class="hero-copy"><h1>YOUR PI.<br>THEIR <span class="glitch" data-text="AIRDROP">AIRDROP</span>.<br><em>NO DONGLE.</em></h1><p>Owly brings AirDrop to Raspberry Pi 5 and wireless Compute Module 5 using the onboard CYW43455 radio. Nexmon opens the monitor and injection path; Owly handles AWDL and transfers.</p><div class="hero-actions"><a class="button primary" href="#download">GRAB THE PACKAGES ↘</a><a class="button ghost" href="#reality">READ THE FINE PRINT ↘</a></div></div><div class="orb-wrap" aria-hidden="true"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="orbit orbit-three"></div><div class="signal signal-a">6</div><div class="signal signal-b">44</div><div class="signal signal-c">149</div><div class="owl"><div class="owl-brow left"></div><div class="owl-brow right"></div><div class="owl-eye left"><div class="pupil"></div></div><div class="owl-eye right"><div class="pupil"></div></div><div class="beak"></div><div class="owl-label">802.11 WEIRD</div></div><div class="orbit-caption">MONITOR // INJECT // DISCOVER</div></div></div>
+      <div class="ticker"><div class="ticker-track">CYW43455 // NEXMON // AWDL // AIRDROP // SHARED WI-FI // CYW43455 // NEXMON // AWDL // AIRDROP // SHARED WI-FI // </div></div>
+    </section>
+    <section class="panel" id="download"><div class="section-kicker">01 / THE DROP</div><div class="section-heading"><h2>Two packages.<br><span>One tiny rebellion.</span></h2><p>For 64-bit Raspberry Pi OS Trixie, Pi 5 or wireless CM5, and a matching 6.18 kernel and 7.45.265 firmware. Check your system before installing.</p></div><div class="cards"><a class="package" href="packages/owly-nexmon-rpi5_0.1-1_arm64.deb" download><span class="package-num">01 // RADIO</span><strong>NEXMON DRIVER</strong><span>Builds patched firmware from your Pi's stock image and compiles its kernel driver.</span><span class="package-link">DOWNLOAD .DEB ↗</span></a><a class="package" href="packages/owly-rpi5_0.4.1-2_arm64.deb" download><span class="package-num">02 // PROTOCOL</span><strong>OWLY FOR PI</strong><span>Owly service, CLI, and shared-mode radio defaults.</span><span class="package-link">DOWNLOAD .DEB ↗</span></a></div><div class="terminal"><div class="terminal-head"><span class="term-dots">● ● ●</span> pi@raspberrypi:~ / installation sequence</div><pre><code>uname -m &amp;&amp; uname -r
+sudo apt update &amp;&amp; sudo apt full-upgrade
+sudo reboot
+sudo dpkg --add-architecture armhf
+sudo apt update
+sudo apt install ./owly-nexmon-rpi5_0.1-1_arm64.deb ./owly-rpi5_0.4.1-2_arm64.deb
+sudo reboot
+owly doctor</code></pre><button class="copy" type="button">COPY COMMANDS</button></div><p class="install-note">Download both files into the same directory. Verify them with <a href="packages/SHA256SUMS">SHA256SUMS ↗</a>. The driver package compiles firmware and a kernel module on the Pi, so installation can take several minutes. Read the <a href="https://github.com/DatanoiseTV/owly/blob/feature/rpi-nexmon/docs/raspberry-pi-os.md">full install and recovery guide ↗</a> before replacing radio firmware. Use Ethernet or a local console for the first boot.</p></section>
+    <section class="split" id="reality"><div><div class="section-kicker">02 / RADIO PHYSICS IS RUDE</div><h2>Wi-Fi stays up.<br><span>Conditions apply.</span></h2></div><div class="split-copy"><p>Shared mode leaves <code>wlan0</code> connected while Owly uses a monitor interface. Your access point must be on AWDL social channel <b>6, 44, or 149</b>. One radio cannot occupy two channels at once.</p><p>This is an experimental build. The Nexmon Pi 5 port is still under upstream review, and two-way AirDrop plus simultaneous Wi-Fi have not yet been verified on physical Pi 5 or CM5 hardware. Testers are welcome.</p><a class="text-link" href="https://github.com/t4t5/owly/pull/94">FOLLOW THE TESTING PR ↗</a></div></section>
+    <section class="footer-callout"><div class="ascii">&lt; owl says: packets first, confidence later /&gt;</div><h2>LET THE PI<br><i>HOOT.</i></h2><p>Build it. Break it. Bring captures and test-card reports.</p><a class="button primary" href="https://github.com/DatanoiseTV/owly/tree/feature/rpi-nexmon">OPEN THE SOURCE ↗</a></section>
+  </main>
+  <footer><span>OWLYFUK // EXPERIMENTAL RADIO LAB</span><span>Built for curious humans and stubborn packets.</span><a href="https://github.com/DatanoiseTV/owly">GITHUB ↗</a></footer>
+  <script src="script.js" defer></script>
+</body>
+</html>

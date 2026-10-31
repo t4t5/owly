@@ -22,6 +22,8 @@ A Linux Wi-Fi card can't hop channels the way an Apple device does, so `owly-rad
 
 Accepting Block Ack (AWDL-15) only helps where the hardware answers A-MPDUs itself: `rx_ampdu` in `crates/owly-radio/drivers.toml` says which cards do.
 
+The `firmware-monitor-shared` mode leaves the managed station connected and creates a firmware-backed monitor interface beside it. AWDL follows the access point's social channel and shared availability schedule. The station's MAC address is used on the monitor interface so the radio can answer unicast frames; whether current Nexmon firmware actually does so needs measurement. The older `firmware-monitor` mode remains available through a driver override when an exclusive fixed-channel test is needed. Use with patched `brcmfmac` on Raspberry Pi 5, Pi 4, Pi 3B, Zero 2 W, Zero W, and wireless CM5 remains opt-in until capture, injection, concurrent Wi-Fi, discovery, and transfers have been measured on each board.
+
 ## Workarounds
 
 **OWLY-1** (receiver, SHOULD) Owly's radio doesn't carry the receiver's records in the Service Response TLV, so the receiver announces in bursts (MDNS-7). The burst depends on the placement, so the radio layer chooses it, and it SHOULD be:

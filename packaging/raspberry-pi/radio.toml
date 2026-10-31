@@ -1,0 +1,4 @@
+# The onboard radio stays connected to an access point on channel 6, 44, or 149.
+station = "wlan0"
+allow_untested = true
+tx_amsdu = false

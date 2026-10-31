@@ -13,6 +13,8 @@
 //!   card may transmit on, electing its master by metric (AWDL-9, AWDL-12).
 //! - **Active monitor**: exclusive, but the monitor is an active one that
 //!   ACKs for itself, for cards with neither.
+//! - **Firmware monitor**: exclusive, with capture and injection supplied by
+//!   patched FullMAC firmware, on a fixed channel without a separate cell.
 //!
 //! AWDL itself is owly-awdl's ([`crate::native`]), which makes `awdl0` on
 //! the AWDL address, the station's (AWDL-2), with its link-local address

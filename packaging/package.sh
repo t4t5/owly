@@ -9,7 +9,7 @@
 # omdrop-owl-bin: both packages' files, staged the same way, in a tarball
 # for the GitHub release (.github/workflows/aur-release.yml).
 #
-#   packaging/package.sh deb|rpm|tar
+#   packaging/package.sh deb|deb-rpi5|rpm|tar
 #
 # The package lands in OUT ($PWD by default). Besides Rust 1.88 or newer,
 # it needs dpkg-dev for the deb, or rpm-build for the rpm.
@@ -19,9 +19,9 @@ umask 022
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 FORMAT=${1:-}
 case "$FORMAT" in
-  deb | rpm | tar) ;;
+  deb | deb-rpi5 | rpm | tar) ;;
   *)
-    echo "usage: packaging/package.sh deb|rpm|tar" >&2
+    echo "usage: packaging/package.sh deb|deb-rpi5|rpm|tar" >&2
     exit 2
     ;;
 esac
@@ -57,6 +57,9 @@ fi
 # revision, for a change to the packaging alone.
 VERSION=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' "$ROOT/Cargo.toml")
 RELEASE=1
+if [ "$FORMAT" = deb-rpi5 ]; then
+  RELEASE=2
+fi
 [ -n "$VERSION" ] || { echo "packaging/package.sh: no workspace version in Cargo.toml" >&2; exit 1; }
 
 (cd "$ROOT" && cargo build --release --locked -p owlyd -p owly-cli)
@@ -67,14 +70,34 @@ STAGE=$WORK/root
 # install.sh's default paths, whatever the environment sets. Debian keeps a
 # package's license with its docs.
 unset PREFIX BINDIR LIBDIR DATADIR LICENSEDIR DOCDIR HOOKDIR
-if [ "$FORMAT" = deb ]; then
+if [ "$FORMAT" = deb ] || [ "$FORMAT" = deb-rpi5 ]; then
   export LICENSEDIR=/usr/share/doc/owly
 fi
 DESTDIR=$STAGE TARGET=$TARGET "$ROOT/packaging/install.sh" owly
 strip --strip-unneeded "$STAGE/usr/lib/owly/owlyd" "$STAGE/usr/bin/owly"
 
-if [ "$FORMAT" = deb ]; then
+if [ "$FORMAT" = deb ] || [ "$FORMAT" = deb-rpi5 ]; then
   ARCH=$(dpkg --print-architecture)
+  if [ "$FORMAT" = deb-rpi5 ] && [ "$ARCH" != arm64 ]; then
+    echo "packaging/package.sh: deb-rpi5 requires an arm64 build host" >&2
+    exit 2
+  fi
+  DEB_NAME=owly
+  DEB_MAINTAINER='T4T5 <t4t5@hey.com>'
+  DEB_DEPENDS=''
+  DEB_CONFLICTS=''
+  DEB_HOMEPAGE=https://github.com/t4t5/owly
+  DEB_DETAIL=" AWDL in userspace, with the owlyd service and owly command line tools."
+  if [ "$FORMAT" = deb-rpi5 ]; then
+    DEB_NAME=owly-rpi5
+    DEB_MAINTAINER='DatanoiseTV <DatanoiseTV@users.noreply.github.com>'
+    DEB_DEPENDS=', bluez, owly-nexmon-rpi5 (>= 0.1)'
+    DEB_CONFLICTS='Conflicts: owly\nProvides: owly\n'
+    DEB_HOMEPAGE=https://github.com/DatanoiseTV/owly
+    DEB_DETAIL=" The Raspberry Pi build supports onboard CYW43455 through Nexmon and can share a station connection on a supported social channel."
+    install -D -m 644 "$ROOT/packaging/raspberry-pi/radio.toml" \
+      "$STAGE/etc/owly/radio.toml"
+  fi
   install -d "$STAGE/DEBIAN"
   install -m 755 "$ROOT/packaging/deb/postinst" "$ROOT/packaging/deb/prerm" \
     "$ROOT/packaging/deb/postrm" "$STAGE/DEBIAN/"
@@ -89,24 +112,28 @@ if [ "$FORMAT" = deb ]; then
 
   # The AUR's depends, by Debian's names: see packaging/arch/owly/PKGBUILD
   # for what each is for.
+  if [ "$FORMAT" = deb-rpi5 ]; then
+    printf '%s\n' /etc/owly/radio.toml > "$STAGE/DEBIAN/conffiles"
+  fi
   cat > "$STAGE/DEBIAN/control" <<EOF
-Package: owly
+Package: $DEB_NAME
 Version: $VERSION-$RELEASE
 Architecture: $ARCH
-Maintainer: T4T5 <t4t5@hey.com>
+Maintainer: $DEB_MAINTAINER
 Installed-Size: $(du -sk --exclude=DEBIAN "$STAGE" | cut -f1)
-Depends: $SHLIBS, dbus, systemd, polkitd, network-manager, iproute2, iputils-ping, mount
+Depends: $SHLIBS, dbus, systemd, polkitd, network-manager, iproute2, iputils-ping, mount$DEB_DEPENDS
 Recommends: hostapd
 Suggests: bluez
 Section: net
 Priority: optional
-Homepage: https://github.com/t4t5/owly
-Description: AirDrop's Wi-Fi radio on Linux
- AWDL in userspace, for Wi-Fi cards without Apple's Broadcom firmware:
- owlyd, the system service that leases the radio out over D-Bus, and the
- owly CLI: doctor, test-card, send and receive.
+Homepage: $DEB_HOMEPAGE
+Description: AirDrop over AWDL on Linux
+$DEB_DETAIL
 EOF
-  PKG=$OUT/owly_$VERSION-${RELEASE}_$ARCH.deb
+  if [ -n "$DEB_CONFLICTS" ]; then
+    printf '%b' "$DEB_CONFLICTS" >> "$STAGE/DEBIAN/control"
+  fi
+  PKG=$OUT/${DEB_NAME}_$VERSION-${RELEASE}_$ARCH.deb
   dpkg-deb --root-owner-group -Zxz --build "$STAGE" "$PKG" > /dev/null
 else
   ARCH=$(uname -m)

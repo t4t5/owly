@@ -49,6 +49,8 @@ struct FakeOps {
     /// The card refuses an ad-hoc interface beside its station.
     ibss_refused: bool,
     fail_monitor: bool,
+    monitor_mac_locked: bool,
+    fail_monitor_tune: bool,
     /// UFW is on.
     ufw: bool,
     /// NetworkManager reconnects by itself once it has the station back.
@@ -110,6 +112,8 @@ impl FakeOps {
             ibss_starts: vec![2437, 5220, 5745],
             ibss_refused: false,
             fail_monitor: false,
+            monitor_mac_locked: false,
+            fail_monitor_tune: false,
             ufw: false,
             autoconnect: true,
             managed: Mutex::new(BTreeMap::new()),
@@ -230,7 +234,11 @@ impl Ops for FakeOps {
             name.into(),
             Iface {
                 kind: kind_name(kind).into(),
-                mac: "02:00:00:00:00:99".parse().unwrap(),
+                mac: if self.monitor_mac_locked && matches!(kind, Kind::Monitor { .. }) {
+                    STATION_MAC.parse().unwrap()
+                } else {
+                    "02:00:00:00:00:99".parse().unwrap()
+                },
                 freq: None,
             },
         );
@@ -257,6 +265,9 @@ impl Ops for FakeOps {
     }
     fn set_mac(&self, iface: &str, mac: MacAddr) -> io::Result<()> {
         self.call(format!("mac {iface} {mac}"));
+        if iface == MONITOR && self.monitor_mac_locked {
+            return Err(io::Error::other("EOPNOTSUPP"));
+        }
         self.ifaces.lock().unwrap().get_mut(iface).unwrap().mac = mac;
         Ok(())
     }
@@ -269,6 +280,9 @@ impl Ops for FakeOps {
     }
     fn set_freq(&self, iface: &str, freq: u32) -> io::Result<()> {
         self.call(format!("freq {iface} {freq}"));
+        if iface == MONITOR && self.fail_monitor_tune {
+            return Err(io::Error::other("EINVAL"));
+        }
         let mut ifaces = self.ifaces.lock().unwrap();
         let i = ifaces
             .get_mut(iface)
@@ -493,6 +507,19 @@ fn mt7612u(o: &mut FakeOps) {
     w.iftypes.retain(|t| *t != IfType::Adhoc);
 }
 
+fn firmware_exclusive_settings(fx: &Fx) -> Settings {
+    let path = fx.dir.path().join("drivers.toml");
+    std::fs::write(
+        &path,
+        "[drivers.brcmfmac]\nstatus = \"untested\"\nmode = \"firmware-monitor\"\n",
+    )
+    .unwrap();
+    let mut settings = fx.settings();
+    settings.allow_untested = true;
+    settings.quirks = Quirks::load(&path).unwrap();
+    settings
+}
+
 #[test]
 fn probe_finds_the_mt7925_ready() {
     let fx = Fx::new();
@@ -539,6 +566,7 @@ fn probe_explains_what_stands_in_the_way() {
     settings.allow_untested = true;
     let caps = fx.backend_with(settings).probe();
     assert!(caps.hardware, "{caps:?}");
+    assert_eq!(caps.mode, Some(Mode::FirmwareMonitorShared));
 
     // The MT7927, on the MT7925's driver, is known not to work.
     let fx = Fx::with(|o| o.device = Some("14c3:7927".into()));
@@ -557,6 +585,115 @@ fn probe_explains_what_stands_in_the_way() {
         caps.missing[0].say.contains("no Wi-Fi interface"),
         "{caps:?}"
     );
+}
+
+#[test]
+fn firmware_monitor_requires_patched_driver_capabilities() {
+    let fx = Fx::with(|o| {
+        o.driver = "brcmfmac".into();
+        o.wiphy
+            .lock()
+            .unwrap()
+            .iftypes
+            .retain(|t| *t != IfType::Monitor);
+    });
+    let mut settings = fx.settings();
+    settings.allow_untested = true;
+    let caps = fx.backend_with(settings).probe();
+    assert_eq!(caps.missing[0].id, "hardware");
+    assert!(caps.missing[0].say.contains("Nexmon"), "{caps:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn firmware_monitor_uses_one_fixed_channel_and_restores_station() {
+    let fx = Fx::with(|o| {
+        o.driver = "brcmfmac".into();
+        o.wiphy
+            .lock()
+            .unwrap()
+            .iftypes
+            .retain(|t| *t != IfType::Adhoc && *t != IfType::Ap);
+    });
+    let mut backend = fx.backend_with(firmware_exclusive_settings(&fx));
+    assert_eq!(backend.probe().missing, []);
+    let link = backend.up().await.unwrap();
+    assert_eq!(link.mac, STATION_MAC.parse().unwrap());
+    assert_eq!(link.announce, Some(Announce::FIXED));
+    assert_eq!(fx.awdl().radio.channel.0, 44);
+    assert_eq!(fx.awdl().radio.presence, Presence::Fixed);
+    let calls = fx.ops.calls();
+    assert_eq!(
+        calls,
+        [
+            format!("managed {STATION} false"),
+            format!("down {STATION}"),
+            format!("add phy0 {MONITOR} monitor"),
+            format!("mac {MONITOR} {STATION_MAC}"),
+            format!("up {MONITOR}"),
+            format!("freq {MONITOR} 5220"),
+        ]
+    );
+    backend.down().await.unwrap();
+    assert_eq!(
+        fx.since(calls.len()),
+        [
+            format!("down {MONITOR}"),
+            format!("del {MONITOR}"),
+            format!("up {STATION}"),
+            format!("managed {STATION} true"),
+        ]
+    );
+    assert_eq!(fx.journal(), None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn firmware_monitor_accepts_an_inherited_station_mac() {
+    let fx = Fx::with(|o| {
+        o.driver = "brcmfmac".into();
+        o.monitor_mac_locked = true;
+    });
+    let mut backend = fx.backend_with(firmware_exclusive_settings(&fx));
+    let link = backend.up().await.unwrap();
+    assert_eq!(link.mac, STATION_MAC.parse().unwrap());
+    backend.down().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn firmware_monitor_restores_wifi_when_no_channel_can_be_tuned() {
+    let fx = Fx::with(|o| {
+        o.driver = "brcmfmac".into();
+        o.fail_monitor_tune = true;
+    });
+    let mut backend = fx.backend_with(firmware_exclusive_settings(&fx));
+    let error = backend.up().await.err().expect("channel tuning must fail");
+    assert!(error.to_string().contains("firmware monitor"), "{error}");
+    assert!(!fx.ops.exists(MONITOR));
+    assert_eq!(fx.ops.kind(STATION).as_deref(), Some("managed"));
+    assert_eq!(fx.journal(), None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn nexmon_shared_mode_keeps_the_station_connected() {
+    let fx = Fx::with(|o| o.driver = "brcmfmac".into());
+    let mut settings = fx.settings();
+    settings.allow_untested = true;
+    let mut backend = fx.backend_with(settings);
+    assert_eq!(backend.probe().mode, Some(Mode::FirmwareMonitorShared));
+    let link = backend.up().await.unwrap();
+    assert_eq!(link.announce, Some(Announce::SHARED));
+    assert_eq!(fx.awdl().radio.presence, Presence::Share);
+    assert_eq!(fx.awdl().radio.channel.0, 44);
+    let calls = fx.ops.calls();
+    assert!(calls.contains(&format!("add phy0 {MONITOR} monitor")));
+    assert!(!calls.iter().any(|c| c == &format!("down {STATION}")));
+    assert!(
+        !calls
+            .iter()
+            .any(|c| c == &format!("managed {STATION} false"))
+    );
+    backend.down().await.unwrap();
+    assert_eq!(fx.ops.kind(STATION).as_deref(), Some("managed"));
+    assert_eq!(fx.journal(), None);
 }
 
 #[test]

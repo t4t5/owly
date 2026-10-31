@@ -1,0 +1,19 @@
+#!/bin/sh
+set -eu
+
+case "${1:-}" in
+  remove | upgrade | deconfigure) ;;
+  *) exit 0 ;;
+esac
+PACKAGE=owly-nexmon-rpi5
+PATCHED=/lib/firmware/nexmon/cyfmac43455-sdio-standard.bin
+for MODULE in /lib/modules/*/updates/owly-nexmon/brcmfmac.ko; do
+  [ -e "$MODULE" ] || continue
+  KERNEL=${MODULE#/lib/modules/}
+  KERNEL=${KERNEL%%/*}
+  rm -f "$MODULE"
+  depmod -a "$KERNEL" || true
+done
+update-alternatives --remove cyfmac43455-sdio.bin "$PATCHED"
+rm -f "$PATCHED"
+echo "$PACKAGE: stock radio restored on disk; reboot to load it"
