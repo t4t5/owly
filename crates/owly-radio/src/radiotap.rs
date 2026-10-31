@@ -74,10 +74,19 @@ pub fn parse(buf: &[u8]) -> Option<Rx<'_>> {
         return None;
     }
     let mut frame = &buf[len..];
-    if flags & F_FCS != 0 {
+    if flags & F_FCS != 0 || ends_in_fcs(frame) {
         frame = frame.get(..frame.len().checked_sub(4)?)?;
     }
     Some(Rx { frame, rssi, freq })
+}
+
+/// ath12k (WCN7850) appends the FCS without setting radiotap's FCS flag.
+fn ends_in_fcs(frame: &[u8]) -> bool {
+    let Some(n) = frame.len().checked_sub(4).filter(|n| *n >= 10) else {
+        return false;
+    };
+    let (body, fcs) = frame.split_at(n);
+    crc32fast::hash(body).to_le_bytes() == fcs
 }
 
 /// A received frame's radiotap header with only the channel it was heard
@@ -181,6 +190,20 @@ mod tests {
         let mut long = buf.clone();
         long[2] = 200;
         assert_eq!(parse(&long), None);
+    }
+
+    #[test]
+    fn strips_an_fcs_the_flags_dont_mention() {
+        assert_eq!(crc32fast::hash(b"123456789"), 0xCBF4_3926);
+        let frame = b"an 802.11 frame".to_vec();
+        let mut with_fcs = rx_header(Some(2437), Some(-30));
+        with_fcs.extend_from_slice(&frame);
+        with_fcs.extend_from_slice(&crc32fast::hash(&frame).to_le_bytes());
+        assert_eq!(parse(&with_fcs).unwrap().frame, &frame[..]);
+
+        let mut without = rx_header(Some(2437), Some(-30));
+        without.extend_from_slice(&frame);
+        assert_eq!(parse(&without).unwrap().frame, &frame[..]);
     }
 
     #[test]

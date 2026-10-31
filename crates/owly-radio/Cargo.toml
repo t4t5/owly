@@ -10,6 +10,7 @@ keywords = ["awdl", "airdrop", "wifi", "nl80211", "linux"]
 categories = ["network-programming", "os::linux-apis", "hardware-support"]
 
 [dependencies]
+crc32fast = "1"
 nix = { version = "0.31", default-features = false, features = ["fs", "net", "process", "signal", "socket", "time"] }
 owly-awdl = { version = "0.4.1", path = "../owly-awdl", features = ["driver"] }
 serde = { version = "1", features = ["derive"] }
