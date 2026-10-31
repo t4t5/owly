@@ -86,18 +86,7 @@ fn ends_in_fcs(frame: &[u8]) -> bool {
         return false;
     };
     let (body, fcs) = frame.split_at(n);
-    crc32(body).to_le_bytes() == fcs
-}
-
-fn crc32(data: &[u8]) -> u32 {
-    let mut crc = !0u32;
-    for &b in data {
-        crc ^= u32::from(b);
-        for _ in 0..8 {
-            crc = (crc >> 1) ^ (0xEDB8_8320 & (crc & 1).wrapping_neg());
-        }
-    }
-    !crc
+    crc32fast::hash(body).to_le_bytes() == fcs
 }
 
 /// A received frame's radiotap header with only the channel it was heard
@@ -205,11 +194,11 @@ mod tests {
 
     #[test]
     fn strips_an_fcs_the_flags_dont_mention() {
-        assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
+        assert_eq!(crc32fast::hash(b"123456789"), 0xCBF4_3926);
         let frame = b"an 802.11 frame".to_vec();
         let mut with_fcs = rx_header(Some(2437), Some(-30));
         with_fcs.extend_from_slice(&frame);
-        with_fcs.extend_from_slice(&crc32(&frame).to_le_bytes());
+        with_fcs.extend_from_slice(&crc32fast::hash(&frame).to_le_bytes());
         assert_eq!(parse(&with_fcs).unwrap().frame, &frame[..]);
 
         let mut without = rx_header(Some(2437), Some(-30));
