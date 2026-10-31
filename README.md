@@ -183,7 +183,7 @@ A USB adapter can run exclusive mode as a second card while the built-in one sta
 station = "wlan0"        # the Wi-Fi interface to use; else the first station
 allow_untested = false   # run on a card the quirks table doesn't mark tested
 reconnect_after = true   # overrides the driver's reconnect_after_monitor
-country = "DE"           # exclusive modes: the regulatory domain to ask for
+country = "DE"           # exclusive modes: the regulatory domain to ask for, else the AP's
 channels = [6]           # exclusive modes: overrides the driver's channel order
 aggregation = true       # overrides the driver's rx_ampdu: accept the phone's Block Ack session
 tx_rate = "mcs7"         # the data frame rate
