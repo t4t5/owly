@@ -188,6 +188,13 @@ status = "❌ Shared: OWL syncs but no transfer, Wi-Fi often lost after ([#60](h
 tested_on = ["HP laptop, `10ec:c821`, Omarchy (kernel 7.2.5)"]
 
 [[card]]
+name = "Realtek RTL8821AU (USB)"
+driver = "rtw88_8821au"
+ids = ["2357:0120"]
+status = "❌ Exclusive: AWDL syncs but no data gets through ([#93](https://github.com/t4t5/owly/issues/93)); shared untested"
+tested_on = ["TP-Link Archer T2U Plus, `2357:0120`, Ubuntu 24.04.5 (kernel 7.0)"]
+
+[[card]]
 name = "Qualcomm WCN6855 (QCNFA765)"
 driver = "ath11k_pci"
 ids = ["17cb:1103"]

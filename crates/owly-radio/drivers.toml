@@ -127,6 +127,14 @@ issues = [
 ]
 notes = "Realtek RTL8822BE (Crosshair VII Hero, 10ec:b822, kernel 7.2.9). Shared mode is untried. The ad-hoc interface sits beside the station. EINVAL on 44 and 149, neither \"No IR\". The kernel logs \"failed to get tx report from firmware\" through the session. The station is back about 6 s after teardown and stayed up for the five minutes watched, without a forced reconnect."
 
+[drivers.rtw88_8821au]
+status = "broken"
+mode = "exclusive"
+issues = [
+    "On the RTL8821AU, AWDL syncs with the phone in exclusive mode but no data gets through: the phone never opens a connection (https://github.com/t4t5/owly/issues/93).",
+]
+notes = "Realtek RTL8821AU (USB, TP-Link Archer T2U Plus, 2357:0120, kernel 7.0). Exclusive mode on channels 6, 44 and 149, with and without tx_noack; shared mode untested."
+
 [drivers.rtw88_8821ce]
 status = "broken"
 mode = "shared"
