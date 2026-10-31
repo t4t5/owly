@@ -691,7 +691,7 @@ checksum = "521739c6d2bac4aa25192232afe6841231376b2b26d4d9fae5ecf8ca5772e441"
 
 [[package]]
 name = "omdrop-owl"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "nix",
  "owly-radio",
@@ -727,7 +727,7 @@ dependencies = [
 
 [[package]]
 name = "owly-airdrop"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "base64",
  "flate2",
@@ -748,7 +748,7 @@ dependencies = [
 
 [[package]]
 name = "owly-awdl"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "tokio",
  "tracing",
@@ -756,7 +756,7 @@ dependencies = [
 
 [[package]]
 name = "owly-cli"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "clap",
  "futures-util",
@@ -778,7 +778,7 @@ dependencies = [
 
 [[package]]
 name = "owly-radio"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "crc32fast",
  "nix",
@@ -793,7 +793,7 @@ dependencies = [
 
 [[package]]
 name = "owlyd"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "futures-util",
  "nix",
@@ -1647,7 +1647,7 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
 name = "xtask"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "serde",
  "serde_json",

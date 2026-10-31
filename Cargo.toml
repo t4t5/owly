@@ -10,7 +10,7 @@ resolver = "3"
 # upgrades in place. The packages and their `v<version>` tag follow it
 # (packaging/arch), and so does owly-radio's requirement on owly-awdl, which
 # publishing needs.
-version = "0.4.1"
+version = "0.4.2"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"

@@ -11,7 +11,7 @@
 # workspace version in Cargo.toml, and pkgver here, in omdrop-owl's and in
 # omdrop-owl-bin's with it, publishes it (.github/workflows/release.yml).
 pkgname=owly
-pkgver=0.4.1
+pkgver=0.4.2
 pkgrel=1
 pkgdesc="AirDrop's Wi-Fi radio on Linux: AWDL in userspace, the owlyd radio service, and the owly CLI"
 arch=('x86_64' 'aarch64')
