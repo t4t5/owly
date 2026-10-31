@@ -118,7 +118,7 @@ Make sure you set your phone's Airdrop setting to "Everyone for 10 minutes".
 | Realtek RTL8852AE | `rtw89_8852ae` | ✅ Shared | • ThinkPad P14s Gen 2a, `10ec:8852`, Ubuntu 26.04.1 (kernel 7.0)<br>• LENOVO ThinkPad T14 Gen 2a, `10ec:8852`, Omarchy (kernel 7.2.8) |
 | Realtek RTL8852BE | `rtw89_8852be` | ✅ Shared | ASUS PRIME B550M-A WIFI II, `10ec:b852`, CachyOS (kernel 7.2.9) |
 | Realtek RTL8852CE | `rtw89_8852ce` | ✅ Shared and exclusive | • Legion Slim 5 16AHP9, `10ec:c852`, Omarchy 4.0.4 (kernel 7.2.5)<br>• ThinkBook 16 G7 IML, `10ec:c852`, Ubuntu 24.04.5 (kernel 7.0) |
-| Realtek RTL8922AE | `rtw89_8922ae` | ✅ Exclusive (opt-in) | ASUS System Version, `10ec:8922`, CachyOS (kernel 7.3.0) |
+| Realtek RTL8922AE | `rtw89_8922ae` | ✅ Exclusive | ASUS System Version, `10ec:8922`, CachyOS (kernel 7.3.0) |
 | Realtek RTL8852BU (USB) | `rtw89_8852bu` | ✅ Exclusive (opt-in), as a second card | USB adapter, `35bc:0108`, NixOS 26.05 (kernel 7.2.9) |
 | Qualcomm Atheros AR9287 | `ath9k` | ✅ Shared | Acer Aspire 4750, `168c:002e`, Ubuntu 24.04.5 LTS (kernel 7.0.0) |
 | Intel 9260 | `iwlwifi` | ✅ Exclusive | `8086:2526`, Debian 13 (kernel 7.2.12) |
