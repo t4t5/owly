@@ -120,6 +120,8 @@ pub struct Config {
     pub neighbour_echo: bool,
     /// Most peers tracked: [`MAX_PEERS`] by default.
     pub max_peers: usize,
+    /// Custom sync master election metric.
+    pub election_metric: Option<u32>,
 }
 
 impl Config {
@@ -138,6 +140,7 @@ impl Config {
             rssi_threshold: Some(-65),
             neighbour_echo: true,
             max_peers: MAX_PEERS,
+            election_metric: None,
         }
     }
 }
@@ -238,8 +241,12 @@ pub struct Node {
 impl Node {
     pub fn new(cfg: Config, now: Time) -> Node {
         let clock = Clock::new(now);
+        let mut election = Election::own(cfg.addr);
+        if let Some(metric) = cfg.election_metric {
+            election.set_metric(metric);
+        }
         Node {
-            election: Election::own(cfg.addr),
+            election,
             sequence: Sequence::fixed(cfg.radio.channel),
             next_psf: now.plus(PSF_INTERVAL_TU as u64 * TU),
             next_mif: now,
@@ -682,6 +689,16 @@ impl Node {
 
     fn action_frame(&mut self, now: Time, subtype: u8) -> Frame {
         let seq = self.next_seq();
+        if self.election.is_master() && self.election.custom_metric {
+            let counter = (now.micros() / 3_140_000) as u32;
+            self.election.master_counter = counter;
+            self.election.self_counter = counter;
+        }
+        let ht = if self.election.custom_metric {
+            HtCapabilities::TWO_STREAM_SGI
+        } else {
+            HT
+        };
         let own = Own {
             addr: self.cfg.addr,
             name: &self.cfg.name,
@@ -693,7 +710,8 @@ impl Node {
             psf_interval_tu: PSF_INTERVAL_TU,
             sequence: &self.sequence,
             election: &self.election,
-            ht: Some(HT),
+            ht: Some(ht),
+            tuned: self.election.custom_metric,
         };
         let mif = subtype == frame::subtype::MIF;
         let bytes = frame::action_frame(self.cfg.addr, seq, subtype, now.micros() as u32, |out| {

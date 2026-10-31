@@ -187,6 +187,7 @@ aggregation = true       # overrides the driver's rx_ampdu: accept the phone's B
 tx_rate = "mcs7"         # the data frame rate
 hostapd = "/usr/sbin/hostapd" # for a hidden AP, on cards with no ad-hoc mode; else found on PATH
 tx_amsdu = true          # send unicast as A-MSDUs where the peer takes them
+election_metric = 550    # overrides the sync master election metric (default 60)
 ```
 
 What Owly does on each Wi-Fi driver comes from [`crates/owly-radio/drivers.toml`](crates/owly-radio/drivers.toml). `/etc/owly/drivers.toml`, in the same format, is read over it, so you can try settings for a new card without rebuilding.

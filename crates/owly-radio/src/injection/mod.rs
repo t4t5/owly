@@ -91,6 +91,7 @@ pub struct Settings {
     pub hostapd: PathBuf,
     pub quirks: Quirks,
     pub run_dir: RunDir,
+    pub election_metric: Option<u32>,
 }
 
 /// AWDL running on the interfaces a setup made.

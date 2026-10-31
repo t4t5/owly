@@ -10,6 +10,7 @@
 //! tx_rate = "mcs7"         # the data frame rate
 //! hostapd = "/usr/sbin/hostapd" # for a hidden AP, on cards with no ad-hoc mode; else found on PATH
 //! tx_amsdu = true          # send unicast as A-MSDUs where the peer takes them
+//! election_metric = 550    # overrides the sync master election metric (default 60)
 //! ```
 //!
 //! `country` matters where the kernel's regulatory domain is the world's
@@ -42,6 +43,7 @@ pub struct Config {
     pub hostapd: Option<PathBuf>,
     #[serde(default)]
     pub tx_amsdu: bool,
+    pub election_metric: Option<u32>,
 }
 
 impl Config {
@@ -96,6 +98,7 @@ impl Config {
             hostapd: self.hostapd.unwrap_or_else(crate::injection::hostapd),
             quirks: Quirks::load(Path::new(quirks::OVERRIDES))?,
             run_dir,
+            election_metric: self.election_metric,
         })
     }
 }
@@ -150,5 +153,17 @@ mod tests {
             ..Config::default()
         };
         assert!(bad.settings(run).is_err());
+    }
+
+    #[test]
+    fn election_metric_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("radio.toml");
+        std::fs::write(&path, "election_metric = 550\n").unwrap();
+        let config = Config::load(&path).unwrap();
+        assert_eq!(config.election_metric, Some(550));
+        let run = RunDir::new("/nonexistent");
+        let s = config.settings(run).unwrap();
+        assert_eq!(s.election_metric, Some(550));
     }
 }
