@@ -143,18 +143,18 @@ reconnect_after_monitor = true
 notes = "Realtek RTL8851BE (ASUS Vivobook 14 X1404VA, 10ec:b851, kernel 7.3.0). Both directions on channel 44. Wi-Fi stayed up during the session and for the five minutes watched after teardown, with the reconnect. Whether reconnect is needed is untested."
 
 [drivers.rtw89_8852ae]
-status = "untested"
+status = "tested"
 mode = "shared"
 reconnect_after_monitor = true
 notes = "Realtek RTL8852AE (ThinkPad P14s Gen 2a, 10ec:8852, kernel 7.0). Both directions on channel 6, in separate runs. After teardown, 280/300 pings with an 8 s gap despite the reconnect, on an AP that was already dropping pings beforehand. Whether reconnect is needed is untested."
 
 [drivers.rtw89_8852be]
-status = "untested"
+status = "tested"
 mode = "shared"
 notes = "Realtek RTL8852BE (ASUS PRIME B550M-A WIFI II, 10ec:b852, kernel 7.2.9). Injects while associated; both directions on channel 44. Wi-Fi stayed up during the session and for the five minutes watched after teardown, without a forced reconnect."
 
 [drivers.rtw89_8852ce]
-status = "untested"
+status = "tested"
 mode = "shared"
 reconnect_after_monitor = true
 notes = "Realtek RTL8852CE (Legion Slim 5 16AHP9, 10ec:c852, kernel 7.2.5; ThinkBook 16 G7 IML, kernel 7.0). Works in shared mode. Exclusive mode works too, both directions, on the ThinkBook. Whether reconnect is needed is untested."
@@ -179,9 +179,12 @@ issues = [
 notes = "Realtek RTL8188FTV (USB, 0bda:f179, kernel 6.14). No ad-hoc mode: runs a hidden AP. A 2.6 MB photo from an iPhone on channel 6 at 32 to 35 kB/s. Sending to the phone is untested: that machine had no Bluetooth for the BLE wake-up."
 
 [drivers.ath9k]
-status = "untested"
+status = "tested"
 mode = "shared"
 reconnect_after_monitor = true
+issues = [
+    "This card has only 2.4 GHz, so shared mode needs an access point on channel 6.",
+]
 notes = "Qualcomm Atheros AR9287 (Acer Aspire 4750, 168c:002e, kernel 7.0). 2.4 GHz only, so shared mode needs an AP on channel 6. Both directions on channel 6, sending with a USB Bluetooth dongle for the BLE wake-up. Wi-Fi stayed up during the session and for the five minutes watched after teardown, with the reconnect. Whether reconnect is needed is untested."
 
 [drivers.ath11k_pci]

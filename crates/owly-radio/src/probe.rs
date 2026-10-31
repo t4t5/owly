@@ -102,11 +102,27 @@ pub fn find_station(ops: &dyn Ops, settings: &Settings) -> Result<Station, Missi
     match quirk.status {
         Status::Tested => {}
         _ if settings.allow_untested => {}
-        Status::Untested => {
+        // A card with its own entry has worked somewhere, just not well or
+        // widely enough to be on by default: don't tell its owner it's
+        // never been tried.
+        Status::Untested if source == Source::Fallback => {
             return Err(missing(
                 "hardware",
                 format!(
                     "Owly hasn't been tested on this computer's Wi-Fi ({card}). To try it anyway, set allow_untested = true in /etc/owly/radio.toml, and please report how it goes."
+                ),
+            ));
+        }
+        Status::Untested => {
+            let why = quirk
+                .issues
+                .first()
+                .map(|i| format!("{i} "))
+                .unwrap_or_default();
+            return Err(missing(
+                "hardware",
+                format!(
+                    "Owly isn't on by default for this computer's Wi-Fi ({card}) yet, though it has worked on other machines (see Supported hardware in Owly's README). {why}To use it, set allow_untested = true in /etc/owly/radio.toml, and please report how it goes."
                 ),
             ));
         }

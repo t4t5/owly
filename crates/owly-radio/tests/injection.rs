@@ -535,10 +535,27 @@ fn probe_explains_what_stands_in_the_way() {
     assert!(!caps.hardware);
     assert_eq!(caps.missing[0].id, "hardware");
     assert!(caps.missing[0].say.contains("brcmfmac"), "{caps:?}");
+    assert!(
+        caps.missing[0].say.contains("hasn't been tested"),
+        "{caps:?}"
+    );
     let mut settings = fx.settings();
     settings.allow_untested = true;
     let caps = fx.backend_with(settings).probe();
     assert!(caps.hardware, "{caps:?}");
+
+    // A card with its own entry has worked somewhere: it's opt-in, not
+    // untried, and its known issue comes with it.
+    let fx = Fx::with(|o| o.driver = "rtl8xxxu".into());
+    let caps = fx.backend().probe();
+    assert!(!caps.hardware);
+    let say = &caps.missing[0].say;
+    assert!(
+        say.contains("isn't on by default")
+            && say.contains("only 2.4 GHz")
+            && say.contains("allow_untested"),
+        "{caps:?}"
+    );
 
     // The MT7927, on the MT7925's driver, is known not to work.
     let fx = Fx::with(|o| o.device = Some("14c3:7927".into()));

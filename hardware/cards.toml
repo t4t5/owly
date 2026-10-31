@@ -51,21 +51,21 @@ tested_on = []
 name = "Realtek RTL8852AE"
 driver = "rtw89_8852ae"
 ids = ["10ec:8852"]
-status = "✅ Shared (opt-in)"
+status = "✅ Shared"
 tested_on = ["ThinkPad P14s Gen 2a, `10ec:8852`, Ubuntu 26.04.1 (kernel 7.0)"]
 
 [[card]]
 name = "Realtek RTL8852BE"
 driver = "rtw89_8852be"
 ids = ["10ec:b852"]
-status = "✅ Shared (opt-in)"
+status = "✅ Shared"
 tested_on = ["ASUS PRIME B550M-A WIFI II, `10ec:b852`, CachyOS (kernel 7.2.9)"]
 
 [[card]]
 name = "Realtek RTL8852CE"
 driver = "rtw89_8852ce"
 ids = ["10ec:c852"]
-status = "✅ Shared and exclusive (opt-in)"
+status = "✅ Shared and exclusive"
 tested_on = [
     "Legion Slim 5 16AHP9, `10ec:c852`, Omarchy 4.0.4 (kernel 7.2.5)",
     "ThinkBook 16 G7 IML, `10ec:c852`, Ubuntu 24.04.5 (kernel 7.0)",
@@ -96,7 +96,7 @@ tested_on = ["USB adapter, `35bc:0108`, NixOS 26.05 (kernel 7.2.9)"]
 name = "Qualcomm Atheros AR9287"
 driver = "ath9k"
 ids = ["168c:002e"]
-status = "✅ Shared (opt-in)"
+status = "✅ Shared"
 tested_on = []
 
 [[card]]
