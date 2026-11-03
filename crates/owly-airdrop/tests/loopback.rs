@@ -631,7 +631,10 @@ veth_test! {
         let socket = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP)).unwrap();
         socket.set_only_v6(true).unwrap();
         socket.set_reuse_address(true).unwrap();
-        socket.set_reuse_port(true).unwrap();
+        #[cfg(unix)]
+        {
+            socket.set_reuse_port(true).unwrap();
+        }
         let any = std::net::SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, mdns::MDNS_PORT));
         socket.bind(&any.into()).unwrap();
         socket.join_multicast_v6(&mdns::MDNS_GROUP, veth.a.index).unwrap();
