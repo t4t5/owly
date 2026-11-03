@@ -105,7 +105,9 @@ pub struct Config {
     /// `owl-05`): a peer visits our channel for a slot or two, and a frame
     /// the hardware retries past the visit (15 times over 75-140 ms on an
     /// AX201) holds up every frame behind it. Lost, it costs a TCP
-    /// retransmission instead.
+    /// retransmission instead. A single packet goes as QoS data whose Ack
+    /// Policy asks for no ACK as well, since not every driver passes on
+    /// radiotap's flag ([`frame::no_ack_data_frame`]).
     pub no_ack: bool,
     /// Accept a peer's Block Ack session (AWDL-15).
     pub accept_addba: bool,
@@ -836,7 +838,12 @@ impl Node {
             let awdl_seq = self.awdl_seq;
             self.awdl_seq = self.awdl_seq.wrapping_add(batch.len() as u16);
             let bytes = if batch.len() == 1 {
-                frame::data_frame(self.cfg.addr, dst, seq, awdl_seq, &batch[0].packet.data)
+                let packet = &batch[0].packet.data;
+                if self.cfg.no_ack {
+                    frame::no_ack_data_frame(self.cfg.addr, dst, seq, awdl_seq, packet)
+                } else {
+                    frame::data_frame(self.cfg.addr, dst, seq, awdl_seq, packet)
+                }
             } else {
                 let packets: Vec<&[u8]> = batch.iter().map(|q| q.packet.data.as_slice()).collect();
                 self.stats.tx_amsdu += 1;
