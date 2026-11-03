@@ -304,6 +304,7 @@ mod tests {
             sequence: &seq,
             election: &e,
             ht: None,
+            tuned: false,
         };
         frame::action_frame(from, 0, frame::subtype::MIF, 0, |o| {
             put_all(o, &own, true);

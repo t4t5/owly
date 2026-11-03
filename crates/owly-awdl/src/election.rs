@@ -40,6 +40,8 @@ pub struct Election {
     pub master_counter: u32,
     pub self_metric: u32,
     pub self_counter: u32,
+    /// Whether a custom sync master metric was configured.
+    pub custom_metric: bool,
 }
 
 impl Election {
@@ -55,7 +57,15 @@ impl Election {
             master_counter: COUNTER_INIT,
             self_metric: METRIC_INIT,
             self_counter: COUNTER_INIT,
+            custom_metric: false,
         }
+    }
+
+    /// Sets a custom election metric for the node.
+    pub fn set_metric(&mut self, metric: u32) {
+        self.self_metric = metric;
+        self.master_metric = metric;
+        self.custom_metric = true;
     }
 
     /// Whether the node is its own sync master.
