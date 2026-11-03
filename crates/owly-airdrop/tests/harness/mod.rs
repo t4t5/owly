@@ -61,6 +61,7 @@ macro_rules! veth_test {
     ($(#[$meta:meta])* async fn $name:ident($veth:ident: Veth) $body:block) => {
         $(#[$meta])*
         #[test]
+        #[cfg_attr(not(target_os = "linux"), ignore = "needs Linux network namespaces (unshare, ip)")]
         fn $name() {
             if let Some($veth) = harness::enter(stringify!($name)) {
                 tokio::runtime::Builder::new_multi_thread()
