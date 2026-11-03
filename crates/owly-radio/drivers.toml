@@ -127,6 +127,14 @@ issues = [
 ]
 notes = "Realtek RTL8822BE (Crosshair VII Hero, 10ec:b822, kernel 7.2.9). Shared mode is untried. The ad-hoc interface sits beside the station. EINVAL on 44 and 149, neither \"No IR\". The kernel logs \"failed to get tx report from firmware\" through the session. The station is back about 6 s after teardown and stayed up for the five minutes watched, without a forced reconnect."
 
+[drivers.rtw88_8822bu]
+status = "tested"
+mode = "exclusive"
+issues = [
+    "In shared mode the phone never lists this computer, so nothing can be sent to it, though sending to the phone works and Wi-Fi stays up.",
+]
+notes = "Realtek RTL8812BU (USB, TP-Link Archer T3U Plus, 2357:0138, kernel 7.3.0), as a second card beside a connected built-in one. Exclusive mode on channel 44, where the ad-hoc cell starts on 5 GHz: both directions, and Wi-Fi back after teardown. Shared mode on channel 44, with the generic entry's reconnect: AWDL syncs, the phone answers pings over awdl0 and takes a send, but never opens a connection to this computer, after a phone restart too. The kernel logs \"failed to get tx report from firmware\" when the radio is given back."
+
 [drivers.rtw88_8821au]
 status = "broken"
 mode = "exclusive"

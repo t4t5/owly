@@ -93,6 +93,13 @@ status = "✅ Exclusive (opt-in), as a second card"
 tested_on = ["USB adapter, `35bc:0108`, NixOS 26.05 (kernel 7.2.9)"]
 
 [[card]]
+name = "Realtek RTL8812BU (USB)"
+driver = "rtw88_8822bu"
+ids = ["2357:0138"]
+status = "✅ Exclusive"
+tested_on = []
+
+[[card]]
 name = "Qualcomm Atheros AR9287"
 driver = "ath9k"
 ids = ["168c:002e"]
