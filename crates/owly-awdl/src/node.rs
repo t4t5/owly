@@ -120,6 +120,10 @@ pub struct Config {
     pub neighbour_echo: bool,
     /// Most peers tracked: [`MAX_PEERS`] by default.
     pub max_peers: usize,
+    /// Send each broadcast or multicast frame as one unicast copy per peer,
+    /// for radios whose firmware never sends group frames from an ad-hoc
+    /// cell and resets when its queue stalls (Intel 8265).
+    pub unicast_groups: bool,
 }
 
 impl Config {
@@ -138,6 +142,7 @@ impl Config {
             rssi_threshold: Some(-65),
             neighbour_echo: true,
             max_peers: MAX_PEERS,
+            unicast_groups: false,
         }
     }
 }

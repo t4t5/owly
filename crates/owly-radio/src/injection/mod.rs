@@ -254,6 +254,7 @@ impl Injection {
         let supervisor = tokio::spawn(supervise(
             ops.clone(),
             prepared.hostapd,
+            prepared.rejoin,
             node.failed(),
             stopped,
             state_tx,
@@ -343,11 +344,17 @@ impl Backend for Injection {
 async fn supervise(
     ops: Arc<dyn Ops>,
     mut hostapd: Option<Child>,
+    rejoin: Option<(String, u32, Duration)>,
     mut failed: watch::Receiver<Option<String>>,
     mut stopped: watch::Receiver<bool>,
     state: watch::Sender<LinkState>,
 ) -> Option<Child> {
     let mut check = tokio::time::interval(Duration::from_secs(1));
+    let mut rejoin_tick = rejoin.as_ref().map(|(_, _, every)| {
+        let mut t = tokio::time::interval_at(tokio::time::Instant::now() + *every, *every);
+        t.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        t
+    });
     let lost = |why: String| {
         tracing::warn!("link lost: {why}");
         state.send_if_modified(|s| {
@@ -364,6 +371,23 @@ async fn supervise(
             Ok(()) = failed.changed() => {
                 if let Some(why) = failed.borrow_and_update().clone() {
                     lost(why);
+                }
+            }
+            _ = async {
+                match rejoin_tick.as_mut() {
+                    Some(t) => drop(t.tick().await),
+                    None => std::future::pending().await,
+                }
+            } => {
+                let Some((cell, freq, _)) = rejoin.clone() else { continue };
+                let ops = ops.clone();
+                let joined = tokio::task::spawn_blocking(move || {
+                    let _ = ops.leave_ibss(&cell);
+                    ops.join_ibss(&cell, freq)
+                })
+                .await;
+                if let Ok(Err(e)) = joined {
+                    tracing::warn!("rejoining the ad-hoc cell: {e}");
                 }
             }
             _ = check.tick() => {

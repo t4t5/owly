@@ -44,6 +44,14 @@ pub struct Quirk {
     /// selection, which doesn't use it yet.
     #[serde(default)]
     pub supports_tx_ldpc: bool,
+    /// Send broadcast and multicast as unicast to each peer: the firmware
+    /// never sends group frames from the ad-hoc cell.
+    #[serde(default)]
+    pub unicast_groups: bool,
+    /// Leave and rejoin the ad-hoc cell this often, in seconds: the
+    /// firmware stops sending to its stations from the cell's first beacon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ibss_rejoin_secs: Option<u64>,
     /// Known problems on this hardware, one sentence each, for the person
     /// at the computer. The probe reports them.
     #[serde(default)]

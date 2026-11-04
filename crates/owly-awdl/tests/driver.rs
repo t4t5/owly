@@ -99,6 +99,14 @@ fn config(n: u8) -> Config {
 }
 
 fn host(n: u8, tx: mpsc::UnboundedSender<Received>, rx: mpsc::UnboundedReceiver<Received>) -> Host {
+    host_with(config(n), tx, rx)
+}
+
+fn host_with(
+    cfg: Config,
+    tx: mpsc::UnboundedSender<Received>,
+    rx: mpsc::UnboundedReceiver<Received>,
+) -> Host {
     let (peers_tx, peers) = watch::channel(Vec::new());
     let (send, outbound) = mpsc::unbounded_channel();
     let (delivered_tx, delivered) = mpsc::unbounded_channel();
@@ -114,7 +122,7 @@ fn host(n: u8, tx: mpsc::UnboundedSender<Received>, rx: mpsc::UnboundedReceiver<
     };
     let netif_read = read.clone();
     let running = driver::spawn(
-        config(n),
+        cfg,
         move || {
             let netif = MemNetif {
                 outbound,
@@ -198,6 +206,38 @@ async fn two_nodes_on_an_in_memory_air_meet_and_pass_ipv6() {
     assert!(got.data.ends_with(b"from a to b"));
     assert_eq!(got.src, mac(1));
 
+    a.running.stop();
+    b.running.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unicast_groups_sends_group_frames_to_each_peer_instead() {
+    let (a_tx, mut from_a) = mpsc::unbounded_channel::<Received>();
+    let (to_b, b_rx) = mpsc::unbounded_channel();
+    let (b_tx, a_rx) = mpsc::unbounded_channel();
+    let mut cfg = config(1);
+    cfg.unicast_groups = true;
+    let a = host_with(cfg, a_tx, a_rx);
+    let mut b = host(2, b_tx, b_rx);
+    let receivers = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let tap = receivers.clone();
+    tokio::spawn(async move {
+        while let Some(frame) = from_a.recv().await {
+            tap.lock().unwrap().push(frame.bytes[4..10].to_vec());
+            let _ = to_b.send(frame);
+        }
+    });
+    let met =
+        tokio::time::timeout(Duration::from_secs(5), b.peers.wait_for(|p| p.len() == 1)).await;
+    assert!(met.is_ok(), "b never heard a");
+
+    let receivers = receivers.lock().unwrap();
+    assert!(!receivers.is_empty());
+    assert!(
+        receivers.iter().all(|r| r[..] == mac(2).0),
+        "a sent to {receivers:02x?}"
+    );
+    drop(receivers);
     a.running.stop();
     b.running.stop();
 }
