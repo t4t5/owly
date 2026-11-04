@@ -138,17 +138,44 @@ pub async fn receive(bus: Option<&str>, args: ReceiveArgs) -> Result<ExitCode, S
         .map_err(|e| e.to_string())
 }
 
-/// `owly browse`.
-pub async fn browse(args: BrowseArgs) -> Result<ExitCode, String> {
+/// `owly browse`: by mDNS and, on an owlyd lease, by `/Discover` at the
+/// radio's AWDL peers (DISC-5), as `owly send` finds them.
+pub async fn browse(bus: Option<&str>, args: BrowseArgs) -> Result<ExitCode, String> {
     async {
         let (iface, name) = args.on.resolve()?;
         let _advert = advertise(args.no_ble).await;
         let sender = Sender::new(sender::Config::new(name, random_service_id()?))?;
-        browse_receivers(&iface, &sender, Duration::from_secs(args.seconds), |r| {
-            println!("{:<14} {:?} ({})", r.instance, r.name, r.addr);
-            false
-        })
-        .await?;
+        let limit = Duration::from_secs(args.seconds);
+        let deadline = tokio::time::Instant::now() + limit;
+        let lease = Lease::find(bus, &iface.name)
+            .await
+            .inspect_err(|e| eprintln!("not trying the radio's AWDL peers: {e}"))
+            .ok();
+        let seen = std::cell::RefCell::new(std::collections::HashSet::new());
+        let show = |r: &Listed| {
+            if seen.borrow_mut().insert(r.addr) {
+                println!("{:<14} {:?} ({})", r.instance, r.name, r.addr);
+            }
+        };
+        let by_peers = async {
+            if let Some(lease) = &lease {
+                discover_peers(&iface, &sender, lease, deadline, |r| {
+                    show(&r);
+                    false
+                })
+                .await;
+            }
+        };
+        let (by_mdns, ()) = tokio::join!(
+            browse_receivers(&iface, &sender, limit, |r| {
+                show(r);
+                false
+            }),
+            by_peers
+        );
+        if let Err(e) = by_mdns {
+            eprintln!("not browsing mDNS: {e}");
+        }
         Ok(ExitCode::SUCCESS)
     }
     .await
@@ -474,15 +501,40 @@ async fn knock_peers(
     to: Option<&str>,
     deadline: tokio::time::Instant,
 ) -> io::Result<Listed> {
-    let mut tried = std::collections::HashSet::new();
+    let mut found = None;
     let mut others = BTreeSet::new();
+    discover_peers(iface, sender, lease, deadline, |r| {
+        if to.is_none_or(|t| same_name(t, &r.name) || t == r.instance) {
+            found = Some(r);
+            return true;
+        }
+        say_other(&mut others, to, &r.name);
+        false
+    })
+    .await;
+    found.ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, no_peer(to, &others)))
+}
+
+/// `/Discover` at each of the lease's AWDL peers until `deadline`, handing
+/// each one that answers to `on_listed` once, until it says to stop.
+async fn discover_peers(
+    iface: &Interface,
+    sender: &Sender,
+    lease: &Lease,
+    deadline: tokio::time::Instant,
+    mut on_listed: impl FnMut(Listed) -> bool,
+) {
+    let mut tried = std::collections::HashSet::new();
+    let mut answered = std::collections::HashSet::new();
     while tokio::time::Instant::now() < deadline {
         for mac in lease.peers().await {
+            if answered.contains(&mac) {
+                continue;
+            }
             if tried.insert(mac) {
                 eprintln!("trying AWDL peer {mac}");
             }
             let addr = SocketAddrV6::new(mac.link_local(), AIRDROP_PORT, 0, iface.index);
-            let mac = mac.to_string();
             // A peer that refuses fails at once; one that's silent mustn't
             // hold up the others for long.
             let wait = deadline
@@ -492,23 +544,20 @@ async fn knock_peers(
             else {
                 continue;
             };
-            if to.is_none_or(|t| same_name(t, &receiver.computer_name) || t == mac) {
-                return Ok(Listed {
-                    instance: mac,
-                    name: receiver.computer_name,
-                    addr,
-                    // UP-1b: no TXT to say, and Apple receivers take DVZip.
-                    flags: RECEIVER_FLAGS | SUPPORTS_DVZIP,
-                });
+            answered.insert(mac);
+            let listed = Listed {
+                instance: mac.to_string(),
+                name: receiver.computer_name,
+                addr,
+                // UP-1b: no TXT to say, and Apple receivers take DVZip.
+                flags: RECEIVER_FLAGS | SUPPORTS_DVZIP,
+            };
+            if on_listed(listed) {
+                return;
             }
-            say_other(&mut others, to, &receiver.computer_name);
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
-    Err(io::Error::new(
-        io::ErrorKind::TimedOut,
-        no_peer(to, &others),
-    ))
 }
 
 /// Whether `to` is this name, with a straight and a curly apostrophe alike:

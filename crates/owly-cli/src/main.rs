@@ -95,7 +95,7 @@ fn main() -> ExitCode {
             Command::Radio(Radio::Peers) => radio::peers(bus).await,
             Command::Receive(args) => airdrop::receive(bus, args).await,
             Command::Send(args) => airdrop::send(bus, args).await,
-            Command::Browse(args) => airdrop::browse(args).await,
+            Command::Browse(args) => airdrop::browse(bus, args).await,
             Command::TestCard(args) => test_card::run(bus, args).await,
             Command::Capture(args) => capture::run(args).await,
         }
