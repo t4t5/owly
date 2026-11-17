@@ -12,7 +12,7 @@ use owly_awdl::{Channel, Presence, RadioConstraints};
 
 use crate::radio::{Announce, Error, MacAddr};
 
-use super::{AP, IBSS, MONITOR, Settings};
+use super::{AP, GO, IBSS, MONITOR, Settings};
 use crate::journal::{Journal, Step};
 use crate::nl80211::{IfType, Kind};
 use crate::probe::{self, Station, social_channel};
@@ -28,6 +28,15 @@ pub(crate) struct Prepared {
     pub announce: Announce,
     /// The hidden AP's hostapd, when the mode runs one.
     pub hostapd: Option<Child>,
+    /// The station a concurrent session runs beside.
+    pub beside: Option<Beside>,
+}
+
+/// The connected station a concurrent session runs beside, and its AP's
+/// frequency: the session ends if it leaves it.
+pub(crate) struct Beside {
+    pub station: String,
+    pub freq: u32,
 }
 
 /// Sets the radio up in the station's mode. Undoes what it did if a step
@@ -47,6 +56,7 @@ pub(crate) fn prepare(
     let result = match s.station.quirk.mode {
         Mode::Shared => s.shared(),
         Mode::Exclusive | Mode::ActiveMonitor => s.exclusive(),
+        Mode::Concurrent => s.concurrent(),
     };
     result.inspect_err(|_| {
         if let Err(stuck) = s.journal.undo(ops) {
@@ -82,24 +92,12 @@ impl Setup<'_> {
     /// associated. A monitor interface carries the station's MAC, and the
     /// station ACKs the phone's unicast.
     fn shared(&mut self) -> Result<Prepared, Error> {
-        let ops = self.ops;
         let name = self.station.name.clone();
-        // Wi-Fi takes a few seconds after a driver reload to associate and
-        // get an address; don't judge a link that's still coming up.
-        let mut freq = None;
-        for _ in 0..15 {
-            freq = ops.link_freq(&name);
-            if freq.is_some() && ops.gateway_reachable(&name) {
-                break;
-            }
-            freq = None;
-            ops.sleep(Duration::from_secs(1));
-        }
-        let Some(freq) = freq else {
-            return Err(Error::not_now(
+        let freq = self.connected_freq().ok_or_else(|| {
+            Error::not_now(
                 "Wi-Fi isn't connected (or isn't passing traffic), and AirDrop shares its channel. Connect to Wi-Fi and try again.",
-            ));
-        };
+            )
+        })?;
         let channel =
             social_channel(freq).ok_or_else(|| Error::not_now(probe::wrong_channel(freq)))?;
         let sta_mac = self.station_mac()?;
@@ -127,6 +125,90 @@ impl Setup<'_> {
             presence: Presence::Share,
         };
         Ok(self.finish(Mode::Shared, radio, sta_mac, Announce::SHARED, None))
+    }
+
+    /// The frequency of the station's AP once it's associated and its
+    /// gateway answers. Wi-Fi takes a few seconds after a driver reload to
+    /// associate and get an address; don't judge a link that's still coming
+    /// up.
+    fn connected_freq(&self) -> Option<u32> {
+        let name = &self.station.name;
+        for _ in 0..15 {
+            if let Some(freq) = self.ops.link_freq(name)
+                && self.ops.gateway_reachable(name)
+            {
+                return Some(freq);
+            }
+            self.ops.sleep(Duration::from_secs(1));
+        }
+        None
+    }
+
+    /// Concurrent mode: the station left associated wherever it is, and
+    /// a P2P group owner on a social channel beside it, on a random local
+    /// MAC that the monitor and AWDL carry too. The GO ACKs the phone's
+    /// unicast. Nothing falls back to taking Wi-Fi down.
+    fn concurrent(&mut self) -> Result<Prepared, Error> {
+        let ops = self.ops;
+        let name = self.station.name.clone();
+        let freqs = self.station.tx_channels(self.settings);
+        if freqs.is_empty() {
+            return Err(no_channels());
+        }
+        let station_freq = self.connected_freq().ok_or_else(|| {
+            Error::not_now(
+                "Wi-Fi isn't connected (or isn't passing traffic), and this card's AirDrop runs beside it. Connect to Wi-Fi and try again.",
+            )
+        })?;
+        let mac = random_local_mac()
+            .map_err(|e| Error::no_radio(format!("Couldn't pick a MAC address: {e}")))?;
+
+        if ops.exists(GO) {
+            let _ = ops.del_iface(GO);
+        }
+        self.record(Step::Interface { name: GO.into() })?;
+        if let Err(e) = ops.add_iface(&self.station.phy, GO, Kind::P2pGo) {
+            let _ = self.journal.discard_last();
+            return Err(Error::no_radio(format!(
+                "Couldn't add a P2P group owner to {}: {e}",
+                self.station.phy
+            )));
+        }
+        ops.set_managed(GO, false);
+        // IP runs on awdl0, as on exclusive mode's cell.
+        let _ = ops.sysctl(&format!("net/ipv6/conf/{GO}/disable_ipv6"), "1");
+        ops.set_mac(GO, mac)
+            .and_then(|()| ops.set_up(GO, true))
+            .map_err(|e| Error::no_radio(format!("Couldn't bring up {GO}: {e}")))?;
+        let freq = freqs
+            .iter()
+            .copied()
+            .find(|&f| match ops.start_go(GO, f, mac) {
+                Ok(()) => true,
+                Err(e) => {
+                    tracing::info!("no P2P group owner on {f} MHz: {e}");
+                    false
+                }
+            })
+            .ok_or_else(|| {
+                Error::no_radio("Couldn't start the P2P group owner on any of AirDrop's channels.")
+            })?;
+        self.monitor(Kind::Monitor { active: false }, mac)?;
+        let channel = social_channel(freq).expect("a social channel");
+        tracing::info!(
+            station = %name, driver = %self.station.driver, channel,
+            "P2P group owner on channel {channel}, beside {name} on {station_freq} MHz"
+        );
+        let radio = RadioConstraints {
+            channel: Channel(channel),
+            presence: Presence::Fixed,
+        };
+        let mut prepared = self.finish(Mode::Concurrent, radio, mac, Announce::FIXED, None);
+        prepared.beside = Some(Beside {
+            station: name,
+            freq: station_freq,
+        });
+        Ok(prepared)
     }
 
     /// Exclusive and active-monitor modes: the station off the air, and
@@ -235,6 +317,7 @@ impl Setup<'_> {
             awdl,
             announce,
             hostapd,
+            beside: None,
         }
     }
 
@@ -491,6 +574,14 @@ fn no_channels() -> Error {
     Error::no_radio(
         "This Wi-Fi card may not transmit on any of AirDrop's channels (6, 44, 149) here.",
     )
+}
+
+/// A random, locally administered unicast MAC.
+fn random_local_mac() -> std::io::Result<MacAddr> {
+    let mut b = [0u8; 6];
+    std::io::Read::read_exact(&mut std::fs::File::open("/dev/urandom")?, &mut b)?;
+    b[0] = (b[0] & 0xfc) | 0x02;
+    Ok(MacAddr(b))
 }
 
 /// Gives the cell or hidden AP the station's MAC, the address the phone

@@ -31,7 +31,7 @@ use crate::doctor;
 use crate::radio;
 
 /// The interfaces NetworkManager must leave alone.
-const OURS: [&str; 4] = ["awdl0", "owlymon0", "owlyibss0", "owlyap0"];
+const OURS: [&str; 5] = ["awdl0", "owlymon0", "owlyibss0", "owlyap0", "owlygo0"];
 
 /// Where distributions put NetworkManager when it isn't on `PATH`: openSUSE
 /// has it in `/usr/sbin`, which a normal user's `PATH` leaves out.
@@ -944,7 +944,7 @@ no answer yet for icmp_seq=5
     #[test]
     fn network_managers_unmanaged_list() {
         let config = "[keyfile]\nunmanaged-devices=interface-name:awdl0;interface-name:owlymon0,interface-name:owlyibss0\n";
-        assert_eq!(nm_would_manage(config), ["owlyap0"]);
+        assert_eq!(nm_would_manage(config), ["owlyap0", "owlygo0"]);
         assert_eq!(nm_would_manage(""), OURS);
     }
 

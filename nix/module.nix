@@ -14,6 +14,7 @@ let
     "owlymon0"
     "owlyibss0"
     "owlyap0"
+    "owlygo0"
   ];
   toml = pkgs.formats.toml { };
 in

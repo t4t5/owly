@@ -13,6 +13,11 @@
 //!   card may transmit on, electing its master by metric (AWDL-9, AWDL-12).
 //! - **Active monitor**: exclusive, but the monitor is an active one that
 //!   ACKs for itself, for cards with neither.
+//! - **Concurrent**: the station stays associated on whatever channel its
+//!   AP is on, and a P2P group owner on a MAC of its own gives the card a
+//!   second channel, a social one, where it ACKs the phone. The monitor
+//!   carries the GO's MAC, AWDL runs fixed to the GO's channel, and the
+//!   firmware shares its time between the two.
 //!
 //! AWDL itself is owly-awdl's ([`crate::native`]), which makes `awdl0` on
 //! the AWDL address, the station's (AWDL-2), with its link-local address
@@ -35,6 +40,7 @@ use crate::native::Native;
 use crate::quirks::Quirks;
 use crate::rundir::RunDir;
 use crate::sys::{Ops, System};
+use setup::Beside;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
@@ -46,6 +52,8 @@ pub const MONITOR: &str = "owlymon0";
 pub const IBSS: &str = "owlyibss0";
 /// Exclusive mode's hidden AP, on cards with no ad-hoc mode.
 pub const AP: &str = "owlyap0";
+/// Concurrent mode's P2P group owner.
+pub const GO: &str = "owlygo0";
 
 /// Where hostapd is, when a package says at build time (`OWLY_HOSTAPD`).
 const HOSTAPD: Option<&str> = option_env!("OWLY_HOSTAPD");
@@ -254,6 +262,7 @@ impl Injection {
         let supervisor = tokio::spawn(supervise(
             ops.clone(),
             prepared.hostapd,
+            prepared.beside,
             node.failed(),
             stopped,
             state_tx,
@@ -336,18 +345,20 @@ impl Backend for Injection {
     }
 }
 
-/// Watches AWDL, the monitor interface and hostapd until told to stop, and
-/// reports the first of them to fail as the link lost; `awdl0` lasts as
-/// long as AWDL does. Hands hostapd back, for reaping once the journal has
-/// stopped it.
+/// Watches AWDL, the monitor interface, hostapd and a concurrent session's
+/// station until told to stop, and reports the first of them to fail as the
+/// link lost; `awdl0` lasts as long as AWDL does. Hands hostapd back, for
+/// reaping once the journal has stopped it.
 async fn supervise(
     ops: Arc<dyn Ops>,
     mut hostapd: Option<Child>,
+    beside: Option<Beside>,
     mut failed: watch::Receiver<Option<String>>,
     mut stopped: watch::Receiver<bool>,
     state: watch::Sender<LinkState>,
 ) -> Option<Child> {
     let mut check = tokio::time::interval(Duration::from_secs(1));
+    let mut unanswered = 0;
     let lost = |why: String| {
         tracing::warn!("link lost: {why}");
         state.send_if_modified(|s| {
@@ -378,6 +389,27 @@ async fn supervise(
                     && let Ok(Some(status)) = child.try_wait()
                 {
                     lost(format!("hostapd exited ({status})"));
+                }
+                if let Some(beside) = &beside {
+                    let (freq, reachable) = {
+                        let ops = ops.clone();
+                        let station = beside.station.clone();
+                        tokio::task::spawn_blocking(move || {
+                            (ops.link_freq(&station), ops.gateway_reachable(&station))
+                        })
+                        .await
+                        .unwrap_or((None, false))
+                    };
+                    // Roaming or a lost association can take the firmware's
+                    // second channel with it; the session ends rather than
+                    // carry on in a state nobody tested.
+                    if freq != Some(beside.freq) {
+                        lost(format!("{} left the AP it was on", beside.station));
+                    }
+                    unanswered = if reachable { 0 } else { unanswered + 1 };
+                    if unanswered >= 3 {
+                        lost(format!("{}'s gateway stopped answering", beside.station));
+                    }
                 }
             }
         }

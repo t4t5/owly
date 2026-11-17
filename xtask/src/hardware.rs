@@ -458,6 +458,7 @@ fn mode_name(mode: &str) -> &str {
         "shared" => "Shared",
         "exclusive" => "Exclusive",
         "active-monitor" => "Active monitor",
+        "concurrent" => "Concurrent",
         other => other,
     }
 }

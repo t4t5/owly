@@ -28,7 +28,8 @@ pub struct Quirk {
     #[serde(default)]
     pub mt76_pm_off: bool,
     /// The social channels to try, in order, where the mode picks its own
-    /// (exclusive and active monitor). Shared mode uses the AP's.
+    /// (exclusive, active monitor and concurrent). Shared mode uses the
+    /// AP's.
     #[serde(default = "default_channels")]
     pub channels: Vec<u8>,
     /// Accept the phone's Block Ack session (AWDL-15). Needs
@@ -66,6 +67,9 @@ pub enum Mode {
     Exclusive,
     /// Wi-Fi down for the session, an active monitor in its place.
     ActiveMonitor,
+    /// AWDL on a channel of its own beside the connected station, through
+    /// a P2P group owner the firmware schedules alongside it.
+    Concurrent,
 }
 
 impl fmt::Display for Mode {
@@ -74,6 +78,7 @@ impl fmt::Display for Mode {
             Mode::Shared => "shared",
             Mode::Exclusive => "exclusive",
             Mode::ActiveMonitor => "active-monitor",
+            Mode::Concurrent => "concurrent",
         })
     }
 }
@@ -185,7 +190,7 @@ mod tests {
     #[test]
     fn every_mode_legacy_ran_is_here() {
         let quirks = packaged();
-        let (intel, _) = quirks.get("iwlwifi", Some("8086:51f0"));
+        let (intel, _) = quirks.get("iwlwifi", Some("8086:51f1"));
         assert_eq!(
             (intel.status, intel.mode),
             (Status::Tested, Mode::Exclusive)
@@ -206,6 +211,11 @@ mod tests {
     #[test]
     fn devices_the_driver_entry_is_wrong_for() {
         let quirks = packaged();
+        // The XPS 9320's AX211 runs beside its station.
+        let (q, source) = quirks.get("iwlwifi", Some("8086:51f0"));
+        assert_eq!(source, Source::Device);
+        assert_eq!((q.status, q.mode), (Status::Tested, Mode::Concurrent));
+        assert_eq!(q.channels, [6]);
         // The MT7927 runs on the MT7925's driver, but isn't heard.
         let (q, source) = quirks.get("mt7925e", Some("14c3:7927"));
         assert_eq!(source, Source::Device);
