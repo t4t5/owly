@@ -100,6 +100,14 @@ owly send --to "Jane's iPhone" photo.jpg
 
 Make sure you set your phone's Airdrop setting to "Everyone for 10 minutes".
 
+## Desktop and script integration
+
+`owly browse --json`, `owly receive --json` and `owly radio up --json`
+provide JSON Lines events for frontends. The receiver reads acceptance decisions
+from stdin, so a frontend can ask before each incoming transfer. Normal
+interactive output remains the default. See [the JSON CLI interface](docs/cli-json.md)
+for event fields, process lifetime and examples.
+
 ## Supported hardware
 
 **Status:** ✅ both directions work, ⚠️ unreliable (see [known issues](#known-issues)), ❌ fails, ❓ untested
