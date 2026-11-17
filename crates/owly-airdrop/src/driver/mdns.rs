@@ -22,9 +22,23 @@ pub struct Mdns {
     burst: Option<Burst>,
 }
 
-/// A registered service, withdrawn when dropped.
+/// A registered service. Dropping it asks the responder to stop; call
+/// [`Registration::withdraw`] to send the goodbye before exiting, or the
+/// records stay in peers' caches and they list a new device on every restart
+/// (issue #125).
 pub struct Registration {
-    _stop: oneshot::Sender<()>,
+    stop: Option<oneshot::Sender<()>>,
+    withdrawn: oneshot::Receiver<()>,
+}
+
+impl Registration {
+    /// Withdraw the records and wait for the goodbye to reach the link.
+    pub async fn withdraw(mut self) {
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+        let _ = self.withdrawn.await;
+    }
 }
 
 /// A running browse, which stops when dropped.
@@ -54,9 +68,13 @@ impl Mdns {
     pub async fn register(&self, service: Service) -> io::Result<Registration> {
         let socket = self.socket()?;
         let (stop, stopped) = oneshot::channel::<()>();
+        let (withdrawn, done) = oneshot::channel::<()>();
         let this = self.clone();
-        tokio::spawn(async move { this.respond(socket, service, stopped).await });
-        Ok(Registration { _stop: stop })
+        tokio::spawn(async move { this.respond(socket, service, stopped, withdrawn).await });
+        Ok(Registration {
+            stop: Some(stop),
+            withdrawn: done,
+        })
     }
 
     /// Browses `_airdrop._tcp` until the browse is dropped (MDNS-6).
@@ -107,6 +125,7 @@ impl Mdns {
         socket: UdpSocket,
         service: Service,
         mut stopped: oneshot::Receiver<()>,
+        withdrawn: oneshot::Sender<()>,
     ) {
         let group = self.group();
         let announcement = service.announcement();
@@ -136,6 +155,7 @@ impl Mdns {
         }
         // Withdraw the records (RFC 6762 §10.1).
         let _ = socket.send_to(&service.goodbye(), group).await;
+        let _ = withdrawn.send(());
     }
 
     async fn browse_loop(
