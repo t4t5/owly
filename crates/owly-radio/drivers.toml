@@ -194,6 +194,14 @@ status = "tested"
 mode = "exclusive"
 notes = "Realtek RTL8922AE (ASUS ProArt B850-CREATOR WIFI NEO, 10ec:8922, kernel 7.3.0), with country IL in radio.toml and the station idle on a machine on Ethernet. No ad-hoc mode: runs a hidden AP. Both directions with an iPhone on channel 44."
 
+# Developer note: the community `rtl8188fu` DKMS driver cannot run Owly on this
+# card. It advertises IBSS but cannot start a cell on 2437 MHz (EINVAL, and the
+# USB device resets), and its cfg80211 ->add_virtual_intf returns -ENODEV for
+# AP/IBSS/STATION, so only a MONITOR interface can be added. Hiding IBSS so the
+# probe selects the hidden-AP path still fails when creating `owlyap0` (-ENODEV).
+# Shared mode is unavailable too: no monitor beside the station. The in-kernel
+# `rtl8xxxu` is the driver that works, as it is a proper mac80211 driver and can
+# create the hidden AP. Observed on Fedora 44 / kernel 6.19.10.
 [drivers.rtl8xxxu]
 status = "untested"
 mode = "exclusive"
@@ -201,7 +209,7 @@ channels = [6]
 issues = [
     "This card has only 2.4 GHz, so it runs on channel 6, where an iPhone spends one slot in sixteen: a 2.6 MB photo takes about 75 s.",
 ]
-notes = "Realtek RTL8188FTV (USB, 0bda:f179, kernel 6.14). No ad-hoc mode: runs a hidden AP. A 2.6 MB photo from an iPhone on channel 6 at 32 to 35 kB/s. Sending to the phone is untested: that machine had no Bluetooth for the BLE wake-up."
+notes = "Realtek RTL8188FTV (USB, 0bda:f179). No ad-hoc mode: runs a hidden AP. Both directions work on channel 6: Linux Mint 22.3 (kernel 6.14, 2.6 MB photo received at 32-35 kB/s) and Fedora 44 (kernel 6.19.10, receive and send with BLE wake-up)."
 
 [drivers.ath9k]
 status = "tested"

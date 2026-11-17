@@ -1,0 +1,62 @@
+{
+  "owly": "0.4.2",
+  "time": 1794886525,
+  "kernel": "6.19.10-300.fc44.x86_64",
+  "os": "Fedora Linux 44 (Workstation Edition)",
+  "machine": "LENOVO ThinkPad T495",
+  "driver": "rtl8xxxu",
+  "device": "0bda:f179",
+  "status": "untested",
+  "mode": "exclusive",
+  "channel": 6,
+  "transfers": "owly",
+  "steps": [
+    {
+      "step": "probe",
+      "result": "pass",
+      "detail": "ready"
+    },
+    {
+      "step": "NetworkManager",
+      "result": "pass",
+      "detail": "leaves Owly's interfaces alone"
+    },
+    {
+      "step": "baseline",
+      "result": "skipped",
+      "detail": "Wi-Fi has no default route"
+    },
+    {
+      "step": "start",
+      "result": "pass",
+      "ms": 385
+    },
+    {
+      "step": "phone heard",
+      "result": "pass"
+    },
+    {
+      "step": "shown on the phone",
+      "result": "pass"
+    },
+    {
+      "step": "phone -> computer",
+      "result": "pass"
+    },
+    {
+      "step": "computer -> phone",
+      "result": "pass",
+      "ms": 23462
+    },
+    {
+      "step": "stop",
+      "result": "pass",
+      "ms": 191
+    }
+  ],
+  "wifi": {
+    "baseline": null,
+    "window": null,
+    "after": null
+  }
+}
