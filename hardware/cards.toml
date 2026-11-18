@@ -164,7 +164,10 @@ name = "Intel BE200"
 driver = "iwlwifi"
 ids = ["8086:272b"]
 status = "✅ Exclusive"
-tested_on = ["GEEKOM IT13 Max, `8086:272b`, Omarchy 4.0.4 (kernel 7.2.5)"]
+tested_on = [
+    "GEEKOM IT13 Max, `8086:272b`, Omarchy 4.0.4 (kernel 7.2.5)",
+    "Lenovo Legion Pro 7 16IAX10H, `8086:272b`, Arch Linux (kernel 7.3.4)"
+]
 
 [[card]]
 name = "MediaTek MT7921"
