@@ -454,6 +454,7 @@ impl Fx {
             channels: None,
             aggregation: None,
             tx_rate: None,
+            rssi_threshold: None,
             tx_amsdu: false,
             hostapd: self.dir.path().join("hostapd"),
             quirks: Quirks::load(Path::new("/nonexistent")).unwrap(),
@@ -879,15 +880,19 @@ async fn exclusive_mode_tries_each_channel_in_order() {
         ]
     );
     assert_eq!(fx.awdl().radio.channel.0, 6);
+    assert_eq!(fx.awdl().rssi_threshold, Some(-65));
     backend.down().await.unwrap();
 
-    // radio.toml's order wins over the driver's.
+    // radio.toml's order wins over the driver's, and its threshold for
+    // peers over owly-awdl's.
     let fx = Fx::with(|o| o.driver = "rtw88_8822be".into());
     let mut settings = fx.settings();
     settings.channels = Some(vec![149]);
+    settings.rssi_threshold = Some(-50);
     let mut backend = fx.backend_with(settings);
     backend.up().await.unwrap();
     assert_eq!(fx.awdl().radio.channel.0, 149);
+    assert_eq!(fx.awdl().rssi_threshold, Some(-50));
     backend.down().await.unwrap();
 }
 

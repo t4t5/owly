@@ -8,6 +8,7 @@
 //! channels = [6]           # exclusive modes: overrides the driver's channel order
 //! aggregation = true       # overrides the driver's rx_ampdu: accept the phone's Block Ack session
 //! tx_rate = "mcs7"         # the data frame rate
+//! rssi_threshold = -50     # peers heard more weakly than this, in dBm, aren't taken on (default -65)
 //! hostapd = "/usr/sbin/hostapd" # for a hidden AP, on cards with no ad-hoc mode; else found on PATH
 //! tx_amsdu = true          # send unicast as A-MSDUs where the peer takes them
 //! ```
@@ -23,6 +24,11 @@
 //! an rtw88 card in exclusive mode it's set through the driver's debugfs
 //! instead, for every data frame and with no falling back to a lower rate,
 //! so a peer too far away for it may hear nothing.
+//!
+//! `rssi_threshold` keeps the radio from following an Apple device that isn't
+//! the one beside it. A node synced to a neighbour's device passes that tree
+//! on, and a phone seen to join it through a radio fixed to one channel
+//! advertised none of its own access point's slots while it did.
 
 use std::path::{Path, PathBuf};
 
@@ -46,6 +52,7 @@ pub struct Config {
     pub channels: Option<Vec<u8>>,
     pub aggregation: Option<bool>,
     pub tx_rate: Option<String>,
+    pub rssi_threshold: Option<i8>,
     pub hostapd: Option<PathBuf>,
     #[serde(default)]
     pub tx_amsdu: bool,
@@ -99,6 +106,7 @@ impl Config {
             channels: self.channels,
             aggregation: self.aggregation,
             tx_rate,
+            rssi_threshold: self.rssi_threshold,
             tx_amsdu: self.tx_amsdu,
             hostapd: self.hostapd.unwrap_or_else(crate::injection::hostapd),
             quirks: Quirks::load(Path::new(quirks::OVERRIDES))?,
@@ -148,10 +156,12 @@ mod tests {
         let good = Config {
             country: Some("DE".into()),
             channels: Some(vec![149, 6]),
+            rssi_threshold: Some(-50),
             ..Config::default()
         };
         let s = good.settings(run.clone()).unwrap();
         assert_eq!(s.hostapd, crate::injection::hostapd());
+        assert_eq!(s.rssi_threshold, Some(-50));
         let bad = Config {
             tx_rate: Some("mcs20".into()),
             ..Config::default()

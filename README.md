@@ -190,6 +190,7 @@ country = "DE"           # exclusive modes: the regulatory domain to ask for, el
 channels = [6]           # exclusive modes: overrides the driver's channel order
 aggregation = true       # overrides the driver's rx_ampdu: accept the phone's Block Ack session
 tx_rate = "mcs7"         # the data frame rate
+rssi_threshold = -50     # peers heard more weakly than this, in dBm, aren't taken on (default -65)
 hostapd = "/usr/sbin/hostapd" # for a hidden AP, on cards with no ad-hoc mode; else found on PATH
 tx_amsdu = true          # send unicast as A-MSDUs where the peer takes them
 ```

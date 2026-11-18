@@ -229,6 +229,9 @@ impl Setup<'_> {
         if let Some(rate) = self.settings.tx_rate {
             awdl.rate = rate;
         }
+        if let Some(dbm) = self.settings.rssi_threshold {
+            awdl.rssi_threshold = Some(dbm);
+        }
         awdl.accept_addba = self
             .settings
             .aggregation
