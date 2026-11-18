@@ -18,6 +18,7 @@ use crate::frame::{self, Frame, Received};
 use crate::ip::Ipv6Packet;
 use crate::peer::{Peer, PeerInfo};
 use crate::rate::TxRate;
+use crate::service::{self, Data, Record};
 use crate::sync::{Clock, MULTICAST_GUARD_US, SLOT_US, UNICAST_GUARD_US};
 use crate::tlv::{self, Advert, HtCapabilities, Own};
 use crate::{MacAddr, TU, Time};
@@ -183,6 +184,12 @@ const ECHO_PAYLOAD: &[u8] = b"owly";
 const PACKET_EXPIRY_US: u64 = 2_000_000;
 /// A held SYN waits this long for its peer to turn valid.
 const SYN_HOLD_US: u64 = 2_000_000;
+/// The host's DNS-SD records are carried for this long after it last
+/// announced them: a receiver repeats its announcement every few seconds
+/// (MDNS-7), and one that has gone without a goodbye stops.
+const SERVICES_EXPIRY_US: u64 = 15_000_000;
+/// Records carried at most: a receiver's are three.
+const MAX_SERVICES: usize = 6;
 /// Unicast packets waiting for their peer's slot at most. Beyond it the
 /// oldest is dropped, so a host should stop handing in packets while
 /// [`Node::backlog`] is this long, as legacy stopped reading `awdl0`.
@@ -232,6 +239,11 @@ pub struct Node {
     /// The sync master and its channel, while its sequence has no slot on
     /// ours (a shared radio).
     no_overlap: Option<(MacAddr, u8)>,
+    /// The host's DNS-SD records (MDNS-2), when it last announced one, and
+    /// the SUI, which changes when they do.
+    services: Vec<Record>,
+    services_heard: Time,
+    sui: u16,
     stats: Stats,
 }
 
@@ -256,6 +268,9 @@ impl Node {
             echo_seq: 0,
             resume: None,
             no_overlap: None,
+            services: Vec::new(),
+            services_heard: now,
+            sui: 0,
             stats: Stats::default(),
         }
     }
@@ -531,10 +546,56 @@ impl Node {
         }
     }
 
+    /// Takes in the records an mDNS response of the host's announces or
+    /// withdraws (MDNS-2).
+    fn learn_services(&mut self, now: Time, packet: &Ipv6Packet) {
+        let mut changed = false;
+        for (record, alive) in service::announced(&packet.data) {
+            let known = self.services.iter().position(|r| r.replaces(&record));
+            match (known, alive) {
+                (Some(i), false) => {
+                    self.services.remove(i);
+                    changed = true;
+                }
+                (Some(i), true) => {
+                    changed |= self.services[i] != record;
+                    self.services[i] = record;
+                }
+                (None, true) if self.services.len() < MAX_SERVICES => {
+                    self.services.push(record);
+                    changed = true;
+                }
+                (None, _) => {}
+            }
+            if alive {
+                self.services_heard = now;
+            }
+        }
+        if changed {
+            self.sui = self.sui.wrapping_add(1);
+        }
+    }
+
+    /// The host name for the ARPA TLV. While the host's records are
+    /// carried, the host their SRV names: that is the name a peer has for
+    /// the host, and this node the one it can reach it through.
+    fn host_name(&self) -> &str {
+        self.services
+            .iter()
+            .find_map(|r| match &r.data {
+                Data::Srv { host, .. } => core::str::from_utf8(host).ok(),
+                _ => None,
+            })
+            .unwrap_or(&self.cfg.name)
+    }
+
     fn enqueue(&mut self, now: Time, packet: Ipv6Packet, out: &mut Vec<Action>) {
         if packet.dst == self.cfg.addr {
             out.push(Action::Deliver(packet));
             return;
+        }
+        if packet.dst.is_multicast() {
+            self.learn_services(now, &packet);
         }
         let queue = if packet.dst.is_multicast() {
             if self.multicast.len() == MULTICAST_QUEUE {
@@ -645,6 +706,10 @@ impl Node {
         self.multicast.retain(|q| !expired(q, PACKET_EXPIRY_US));
         self.stats.dropped_expired += (before - self.unicast.len() - self.multicast.len()) as u64;
         self.held.retain(|q| !expired(q, SYN_HOLD_US));
+        if !self.services.is_empty() && now.since(self.services_heard) > SERVICES_EXPIRY_US {
+            self.services.clear();
+            self.sui = self.sui.wrapping_add(1);
+        }
         let ranking = self.cfg.radio.presence.ranking();
         self.election.run(
             self.peers.values().filter(|p| p.valid).map(|p| &p.election),
@@ -684,7 +749,7 @@ impl Node {
         let seq = self.next_seq();
         let own = Own {
             addr: self.cfg.addr,
-            name: &self.cfg.name,
+            name: self.host_name(),
             devclass: DEVCLASS,
             channel: self.cfg.radio.channel.0,
             master_channel: self.cfg.radio.channel,
@@ -694,6 +759,8 @@ impl Node {
             sequence: &self.sequence,
             election: &self.election,
             ht: Some(HT),
+            services: &self.services,
+            sui: self.sui,
         };
         let mif = subtype == frame::subtype::MIF;
         let bytes = frame::action_frame(self.cfg.addr, seq, subtype, now.micros() as u32, |out| {

@@ -153,9 +153,24 @@ A sequence of TLVs follows the header.
 | 0, 1, 8–11, 13–15 | (deprecated) | no, ignore |
 | other | (unknown) | no, MUST be skipped by length, not rejected |
 
-A PSF carries types 4, 5, 18, 24, 6, 7, 12 and 21, in that order. A MIF adds 16 after 7.
+A PSF carries types 4, 5, 18, 24, 6, 7, 12 and 21, in that order. A MIF adds 16 after 7, and ends with a type 2 for each record the node carries (MDNS-2).
 
-The layouts follow. Offsets are into the TLV's value, after its 3-byte header. The layouts of types 2, 20 and 22 aren't defined in this version.
+The layouts follow. Offsets are into the TLV's value, after its 3-byte header. The layouts of types 20 and 22 aren't defined in this version.
+
+**Service Response (2)**
+
+One DNS-SD record (MDNS-2).
+
+| Offset | Size | Field | Value |
+|---|---|---|---|
+| 0 | 2 | length | of the name and the type: *n* + 1 |
+| 2 | *n* | name | the record's name |
+| 2 + *n* | 1 | type | `12` PTR, `16` TXT, `33` SRV |
+| 3 + *n* | 2 | data length | *m* |
+| 5 + *n* | 2 | reserved | `0` |
+| 7 + *n* | *m* | data | the record's data |
+
+A name is its leading labels, each with its length before it, then a 2-byte code (BE) for the rest: `0xc007` for `_airdrop._tcp.local`, `0xc00a` for `_tcp.local`, `0xc00c` for `local`. Other codes aren't defined in this version. The data is what the record has in DNS, with a name in it written the same way: an SRV's is priority, weight and port (BE), then its target. In a PTR's, the code `0xc000` stands for the record's own name, so the data is the instance's label, then `0xc000`.
 
 **Synchronization Parameters (4)**
 
@@ -202,10 +217,11 @@ A node ignores type 5 from a peer that also sends type 24.
 | Offset | Size | Field | Value |
 |---|---|---|---|
 | 0 | 3 | reserved | `0` |
-| 3 | 2 | SUI | `0` |
-| 5 | 4 | bitmask | `0` |
+| 3 | 2 | SUI | |
+| 5 | 4 | bitmask | a bit for each byte that follows |
+| 9 | 0 to 32 | values | |
 
-A node sends it as zeros. A changed SUI makes peers flush their mDNS caches.
+A changed SUI makes peers flush their mDNS caches: a node changes it when its records do. The values say which names the node carries records under (MDNS-2), so that a peer can tell without asking. A name's value is the CRC-8 (polynomial `0x07`, initial value `0`) of the name as DNS writes it, in lower case and with its root label. Value *v* sets bit *v* mod 8 of byte *v* / 8 of a 32-byte map. Only the map's nonzero bytes are sent, lowest first, and bit *i* of the bitmask says that byte *i* is among them. A node that carries no records sends the bitmask as `0`, and no values.
 
 **HT Capabilities (7)**
 
@@ -237,7 +253,7 @@ Other flag bits are reserved. The TLV can end with 2 bytes of extended flags, re
 |---|---|---|---|
 | 0 | 1 | flags | `3` |
 | 1 | 1 | name length | *n* |
-| 2 | *n* | host name | the first label, without `.local` |
+| 2 | *n* | host name | the first label, without `.local`: the host the node's SRV records name (MDNS-2) |
 | 2 + *n* | 2 | domain (BE) | `0xc00c`, a DNS name pointer to `.local` |
 
 **Channel Sequence (18)**
@@ -339,7 +355,7 @@ The IPv6 packet follows.
 | AAAA | the link-local address of the AWDL interface |
 | TXT | `flags=<decimal receiver flags>` (MDNS-4). Receivers may publish further keys, which aren't defined in this version. |
 
-**MDNS-2** Over AWDL, these records also travel in the Service Response TLV (§3.2) of action frames.
+**MDNS-2** Over AWDL, the PTR, SRV and TXT records also travel in action frames (§3.2): each in a Service Response TLV of the node's MIFs, with a value for each of their names in the Service Parameters TLV of every action frame. The address doesn't: it follows from the node's AWDL address (NET-2), the node being the one whose ARPA TLV names the SRV record's target.
 
 **MDNS-3** The service ID SHOULD stay the same for the whole visible session and is reused as `SenderID` in `/Discover` and `/Ask` (§6).
 
