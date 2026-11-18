@@ -28,16 +28,18 @@ pub struct Mdns {
 /// (issue #125).
 pub struct Registration {
     stop: Option<oneshot::Sender<()>>,
-    withdrawn: oneshot::Receiver<()>,
+    withdrawn: oneshot::Receiver<io::Result<()>>,
 }
 
 impl Registration {
-    /// Withdraw the records and wait for the goodbye to reach the link.
-    pub async fn withdraw(mut self) {
+    /// Withdraw the records and wait for the socket to accept the goodbye.
+    pub async fn withdraw(mut self) -> io::Result<()> {
         if let Some(stop) = self.stop.take() {
             let _ = stop.send(());
         }
-        let _ = self.withdrawn.await;
+        self.withdrawn
+            .await
+            .map_err(|_| io::Error::other("mDNS responder stopped before withdrawal"))?
     }
 }
 
@@ -68,7 +70,7 @@ impl Mdns {
     pub async fn register(&self, service: Service) -> io::Result<Registration> {
         let socket = self.socket()?;
         let (stop, stopped) = oneshot::channel::<()>();
-        let (withdrawn, done) = oneshot::channel::<()>();
+        let (withdrawn, done) = oneshot::channel();
         let this = self.clone();
         tokio::spawn(async move { this.respond(socket, service, stopped, withdrawn).await });
         Ok(Registration {
@@ -125,7 +127,7 @@ impl Mdns {
         socket: UdpSocket,
         service: Service,
         mut stopped: oneshot::Receiver<()>,
-        withdrawn: oneshot::Sender<()>,
+        withdrawn: oneshot::Sender<io::Result<()>>,
     ) {
         let group = self.group();
         let announcement = service.announcement();
@@ -154,8 +156,8 @@ impl Mdns {
             }
         }
         // Withdraw the records (RFC 6762 §10.1).
-        let _ = socket.send_to(&service.goodbye(), group).await;
-        let _ = withdrawn.send(());
+        let result = socket.send_to(&service.goodbye(), group).await;
+        let _ = withdrawn.send(result.map(|_| ()));
     }
 
     async fn browse_loop(
