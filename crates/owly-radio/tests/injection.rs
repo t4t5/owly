@@ -49,6 +49,8 @@ struct FakeOps {
     regdom_from_ap: bool,
     /// The channels on which an ad-hoc cell starts.
     ibss_starts: Vec<u32>,
+    /// No 40 MHz cell starts.
+    ibss_no_ht40: bool,
     /// The card refuses an ad-hoc interface beside its station.
     ibss_refused: bool,
     fail_monitor: bool,
@@ -112,6 +114,7 @@ impl FakeOps {
             regdom: Mutex::new("DE".into()),
             regdom_from_ap: false,
             ibss_starts: vec![2437, 5220, 5745],
+            ibss_no_ht40: false,
             ibss_refused: false,
             fail_monitor: false,
             ufw: false,
@@ -287,8 +290,18 @@ impl Ops for FakeOps {
         i.freq = Some(freq);
         Ok(())
     }
-    fn join_ibss(&self, iface: &str, freq: u32) -> io::Result<()> {
-        self.call(format!("join {iface} {freq}"));
+    fn join_ibss(&self, iface: &str, freq: u32, bssid: MacAddr, ht40: bool) -> io::Result<()> {
+        // As it always was on AWDL's BSSID at 20 MHz; what differs is said.
+        let own = if bssid == owly_awdl::BSSID {
+            String::new()
+        } else {
+            format!(" bssid {bssid}")
+        };
+        let wide = if ht40 { " ht40" } else { "" };
+        self.call(format!("join {iface} {freq}{own}{wide}"));
+        if ht40 && self.ibss_no_ht40 {
+            return Err(io::Error::other("EINVAL"));
+        }
         let no_ir = self
             .wiphy
             .lock()
@@ -433,6 +446,18 @@ impl Fx {
             quirks: Quirks::load(Path::new("/nonexistent")).unwrap(),
             run_dir: self.run(),
         }
+    }
+
+    /// The settings, with an entry of `quirks` for `driver` over the
+    /// packaged table: exclusive mode, on the default channels.
+    fn settings_with_quirks(&self, driver: &str, quirks: &str) -> Settings {
+        let overrides = self.dir.path().join("drivers.toml");
+        let entry =
+            format!("[drivers.{driver}]\nstatus = \"tested\"\nmode = \"exclusive\"\n{quirks}");
+        std::fs::write(&overrides, entry).unwrap();
+        let mut settings = self.settings();
+        settings.quirks = Quirks::load(&overrides).unwrap();
+        settings
     }
 
     fn run(&self) -> RunDir {
@@ -850,6 +875,47 @@ async fn exclusive_mode_tries_each_channel_in_order() {
     let mut backend = fx.backend_with(settings);
     backend.up().await.unwrap();
     assert_eq!(fx.awdl().radio.channel.0, 149);
+    backend.down().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_cell_is_as_the_drivers_quirks_say() {
+    let joins = |fx: &Fx| -> Vec<String> {
+        let calls = fx.ops.calls().into_iter();
+        calls.filter(|c| c.starts_with("join")).collect()
+    };
+    let quirks = "cell_own_bssid = true\ncell_ht40 = true\n";
+    let own = "02:6f:77:6c:79:01";
+
+    // Off AWDL's BSSID, and 40 MHz wide on 5 GHz.
+    let fx = Fx::with(intel);
+    let mut backend = fx.backend_with(fx.settings_with_quirks("iwlwifi", quirks));
+    backend.up().await.unwrap();
+    assert_eq!(joins(&fx), [format!("join {IBSS} 5220 bssid {own} ht40")]);
+    backend.down().await.unwrap();
+
+    // Where no 40 MHz cell starts, a 20 MHz one on the same channel, and
+    // always 20 MHz on 2.4 GHz.
+    let fx = Fx::with(|o| {
+        intel(o);
+        o.ibss_no_ht40 = true;
+    });
+    let mut backend = fx.backend_with(fx.settings_with_quirks("iwlwifi", quirks));
+    backend.up().await.unwrap();
+    assert_eq!(
+        joins(&fx),
+        [
+            format!("join {IBSS} 5220 bssid {own} ht40"),
+            format!("join {IBSS} 5220 bssid {own}"),
+        ]
+    );
+    backend.down().await.unwrap();
+    let fx = Fx::with(intel);
+    let mut settings = fx.settings_with_quirks("iwlwifi", quirks);
+    settings.channels = Some(vec![6]);
+    let mut backend = fx.backend_with(settings);
+    backend.up().await.unwrap();
+    assert_eq!(joins(&fx), [format!("join {IBSS} 2437 bssid {own}")]);
     backend.down().await.unwrap();
 }
 

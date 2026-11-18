@@ -31,6 +31,15 @@ pub struct Quirk {
     /// (exclusive and active monitor). Shared mode uses the AP's.
     #[serde(default = "default_channels")]
     pub channels: Vec<u8>,
+    /// Exclusive mode's ad-hoc cell on a BSSID of its own rather than
+    /// AWDL's, for a driver that beacons every 100 TU whatever the cell
+    /// asks for.
+    #[serde(default)]
+    pub cell_own_bssid: bool,
+    /// Exclusive mode's ad-hoc cell 40 MHz wide on 5 GHz, so the radio
+    /// hears the 40 MHz frames its HT capabilities invite.
+    #[serde(default)]
+    pub cell_ht40: bool,
     /// Accept the phone's Block Ack session (AWDL-15). Needs
     /// the hardware to answer A-MPDUs with a Block Ack itself.
     #[serde(default)]
@@ -180,6 +189,19 @@ mod tests {
         let (q, source) = quirks.get("brcmfmac", None);
         assert_eq!(source, Source::Fallback);
         assert_eq!(q.status, Status::Untested);
+    }
+
+    #[test]
+    fn the_rtl8812bu_keeps_its_cell_off_awdls_bssid() {
+        let quirks = packaged();
+        let (q, source) = quirks.get("rtw88_8822bu", Some("2357:0138"));
+        assert_eq!((source, q.mode), (Source::Driver, Mode::Exclusive));
+        assert!(q.cell_own_bssid && q.cell_ht40);
+        // mac80211 has no station entry to answer a Block Ack request for.
+        assert!(q.rx_ampdu);
+        // No other driver's entry asks for any of it.
+        let (intel, _) = quirks.get("iwlwifi", None);
+        assert!(!intel.cell_own_bssid && !intel.cell_ht40);
     }
 
     #[test]

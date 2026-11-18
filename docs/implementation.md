@@ -37,6 +37,8 @@ Accepting Block Ack (AWDL-15) only helps where the hardware answers A-MPDUs itse
 - **Early SYNs (AWDL-18):** `owly-awdl` hands packets to the kernel's IP stack, whose SYN-ACK would wait on neighbor discovery, which AWDL doesn't carry. So it holds the SYN until the peer's neighbor entry exists.
 - **MAC address (AWDL-2):** if udev or NetworkManager rewrites `awdl0`'s MAC address, peers connect to an address the interface doesn't have. `owly-radio` pins it for the session.
 - **Firewall (NET-4):** host firewalls must let TCP `8771` in from `fe80::/10` on `awdl0`. `owly-radio`'s probe warns when ufw is on, `omdrop firewall install` adds the rule, and the NixOS module opens the port.
+- **Beacons on AWDL's BSSID:** exclusive mode's ad-hoc cell joins AWDL's BSSID and beacons every 10 s, as rarely as it may. A driver that beacons every 100 TU all the same (rtw88) gets the cell on a BSSID of its own (`cell_own_bssid` in `drivers.toml`): an iPhone beside it on AWDL's didn't answer this computer's unicast. Off AWDL's BSSID, mac80211 keeps no station entry for a peer.
+- **40 MHz:** Owly's HT capabilities offer 40 MHz, which an iPhone then sends on 5 GHz. Where `drivers.toml` says so (`cell_ht40`), the cell is that wide; a 20 MHz cell hears only the phone's retries.
 - **Unflagged FCS:** some drivers, such as ath12k on the Qualcomm WCN7850, append the FCS to captured frames without setting radiotap's FCS flag, so every frame ends in four bytes that don't parse. When the flag is missing, `owly-radio` strips the last four bytes if they are the CRC-32 of the rest.
 
 ## Testing

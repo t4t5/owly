@@ -60,6 +60,7 @@ const LIMIT_TYPES: u16 = 2;
 const MNTR_FLAG_OTHER_BSS: u16 = 4;
 const MNTR_FLAG_ACTIVE: u16 = 6;
 const CHAN_HT20: u32 = 1;
+const CHAN_HT40PLUS: u32 = 3;
 const FEATURE_ACTIVE_MONITOR: u32 = 1 << 17;
 
 /// An interface type, as nl80211 numbers them.
@@ -429,12 +430,16 @@ impl Nl80211 {
         freq: u32,
         bssid: MacAddr,
         beacon_interval: u32,
+        ht40: bool,
     ) -> io::Result<()> {
         let mut a = Attrs::new();
         a.u32(ATTR_IFINDEX, ifindex)
             .bytes(ATTR_SSID, ssid)
             .u32(ATTR_WIPHY_FREQ, freq)
-            .u32(ATTR_WIPHY_CHANNEL_TYPE, CHAN_HT20)
+            .u32(
+                ATTR_WIPHY_CHANNEL_TYPE,
+                if ht40 { CHAN_HT40PLUS } else { CHAN_HT20 },
+            )
             .flag(ATTR_FREQ_FIXED)
             .bytes(ATTR_MAC, &bssid.0)
             .u32(ATTR_BEACON_INTERVAL, beacon_interval);

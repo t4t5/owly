@@ -18,7 +18,7 @@ use crate::nl80211::{IfType, Kind};
 use crate::probe::{self, Station, social_channel};
 use crate::quirks::Mode;
 use crate::rundir::Process;
-use crate::sys::Ops;
+use crate::sys::{IBSS_OWN_BSSID, Ops};
 
 /// What a setup leaves for AWDL.
 pub(crate) struct Prepared {
@@ -330,8 +330,10 @@ impl Setup<'_> {
     /// AX201 never sees an ACK. The cell is HT, since an iPhone sends its
     /// unicast at HT rates, which a non-HT cell neither receives nor ACKs.
     /// Cards that refuse an ad-hoc interface beside the station, even down
-    /// (some AX211s), get the station itself made the cell. Returns the
-    /// frequency it started on.
+    /// (some AX211s), get the station itself made the cell. A driver that
+    /// beacons more often than the cell asks gets the cell on a BSSID of its
+    /// own, and one that's to hear 40 MHz frames a cell that wide where one
+    /// starts, as the quirks say. Returns the frequency it started on.
     fn ibss_cell(&mut self, mac: MacAddr, freqs: &[u32]) -> Result<u32, Error> {
         let ops = self.ops;
         let name = self.station.name.clone();
@@ -372,17 +374,31 @@ impl Setup<'_> {
         let _ = ops.sysctl(&format!("net/ipv6/conf/{cell}/disable_ipv6"), "1");
         ops.set_up(&cell, true)
             .map_err(|e| Error::no_radio(format!("Couldn't bring {cell} up: {e}")))?;
-        for &f in freqs {
-            if let Err(e) = ops.join_ibss(&cell, f) {
-                tracing::info!("no ad-hoc cell on {f} MHz: {e}");
-                continue;
+        let quirk = &self.station.quirk;
+        let bssid = if quirk.cell_own_bssid {
+            IBSS_OWN_BSSID
+        } else {
+            owly_awdl::BSSID
+        };
+        let start = |f: u32, ht40: bool| {
+            let width = if ht40 { 40 } else { 20 };
+            if let Err(e) = ops.join_ibss(&cell, f, bssid, ht40) {
+                tracing::info!("no {width} MHz ad-hoc cell on {f} MHz: {e}");
+                return false;
             }
             // mac80211 scans the channel once before it starts the cell.
             if self.wait(Duration::from_secs(10), || ops.link_freq(&cell) == Some(f)) {
+                return true;
+            }
+            tracing::info!("the {width} MHz ad-hoc cell on {f} MHz didn't start");
+            let _ = ops.leave_ibss(&cell);
+            false
+        };
+        for &f in freqs {
+            // 2.4 GHz has no room for the second channel.
+            if (quirk.cell_ht40 && f > 5000 && start(f, true)) || start(f, false) {
                 return Ok(f);
             }
-            tracing::info!("the ad-hoc cell on {f} MHz didn't start");
-            let _ = ops.leave_ibss(&cell);
         }
         Err(Error::no_radio(
             "Couldn't start AWDL's ad-hoc cell on any of AirDrop's channels.",
