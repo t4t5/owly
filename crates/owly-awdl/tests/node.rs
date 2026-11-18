@@ -9,7 +9,7 @@ use owly_awdl::sync::{SLOT_US, UNICAST_GUARD_US};
 use owly_awdl::tlv::{self, HtCapabilities, Own};
 use owly_awdl::{
     Action, Channel, Config, Input, Ipv6Packet, MacAddr, Node, Presence, RadioConstraints,
-    Sequence, TU, Time,
+    Sequence, TU, Time, TxRate,
 };
 
 const US: MacAddr = MacAddr([0x02, 0, 0, 0, 0, 0x01]);
@@ -385,6 +385,88 @@ fn a_fixed_radio_sends_unicast_in_every_slot_its_peer_is_on_its_channel_without_
         ..radio
     };
     assert!(!Config::new(US, "owly", shared).no_ack);
+}
+
+/// A fixed radio on 149 that sends at HT MCS 7, where a frame of 1400 bytes
+/// takes about 480 µs, with or without pacing.
+fn paced(pace: bool) -> Node {
+    let radio = RadioConstraints {
+        channel: Channel(149),
+        presence: Presence::Fixed,
+    };
+    let mut cfg = Config::new(US, "owly", radio);
+    cfg.rate = TxRate::Ht { mcs: 7, sgi: false };
+    cfg.pace = pace;
+    Node::new(cfg, START)
+}
+
+/// Hands the node `packets` packets of 1400 bytes for the phone at `from`,
+/// then runs it for 16 slots in steps of 100 µs. Returns how many frames it
+/// handed the radio for them, the most at one time, how many when the phone
+/// wasn't going to be on our channel for another `stay` µs, and the time at
+/// the end.
+fn handed(n: &mut Node, from: Time, packets: u16, stay: u64) -> (usize, usize, usize, Time) {
+    let on_channel = |n: &Node, t: Time| PHONE_SEQ[n.clock().slot(t)] == 149;
+    let (mut sent, mut most, mut late) = (0, 0, 0);
+    let mut tally = |n: &Node, t: Time, actions: &[Action]| {
+        let big = |f: &&frame::Frame| f.to == PHONE && f.bytes.len() > 1400;
+        let ours = transmits(actions).into_iter().filter(big).count();
+        sent += ours;
+        most = most.max(ours);
+        if !(on_channel(n, t) && on_channel(n, t.plus(stay))) {
+            late += ours;
+        }
+    };
+    let mut at_once = Vec::new();
+    for i in 0..packets {
+        let packet = Ipv6Packet::echo_request(US, PHONE, 1, i, &[0x5a; 1400]);
+        at_once.extend(n.handle(Input::Outbound { now: from, packet }));
+    }
+    tally(n, from, &at_once);
+    let mut t = from;
+    for _ in 0..(16 * SLOT_US / 100) {
+        t = t.plus(100);
+        let actions = tick(n, t);
+        tally(n, t, &actions);
+    }
+    (sent, most, late, t)
+}
+
+#[test]
+fn pacing_hands_the_radio_only_what_it_sends_while_the_peer_is_there() {
+    // The backlog the radio may hold, a frame, and the time it's to be done
+    // before the phone leaves.
+    let stay = 6_000 + 500 + 2_000;
+    // 4.5 ms before the phone leaves: clear of the guard, but too late for
+    // the radio to send much.
+    let before_it_leaves = |n: &mut Node, mut t: Time| {
+        let on_channel = |n: &Node, t: Time| PHONE_SEQ[n.clock().slot(t)] == 149;
+        while !(on_channel(n, t) && !on_channel(n, t.plus(4_500))) {
+            t = t.plus(100);
+            tick(n, t);
+        }
+        t
+    };
+
+    // Unpaced, a queue goes to the radio all at once, whenever it comes.
+    let mut n = paced(false);
+    let t = meet(&mut n, &seq(PHONE_SEQ));
+    let (sent, most, _, t) = handed(&mut n, t, 40, stay);
+    assert_eq!((sent, most), (40, 40));
+    let t = before_it_leaves(&mut n, t);
+    let (sent, _, late, _) = handed(&mut n, t, 5, stay);
+    assert_eq!((sent, late), (5, 5));
+
+    // Paced, the radio gets what it can hold, then a frame as it sends one,
+    // and nothing it would still hold when the phone leaves.
+    let mut n = paced(true);
+    let t = meet(&mut n, &seq(PHONE_SEQ));
+    let (sent, most, late, t) = handed(&mut n, t, 120, stay);
+    assert_eq!((sent, late), (120, 0));
+    assert!(most <= 6_000 / 480 + 2, "{most} frames at once");
+    let t = before_it_leaves(&mut n, t);
+    let (sent, _, late, _) = handed(&mut n, t, 5, stay);
+    assert_eq!((sent, late), (5, 0));
 }
 
 #[test]

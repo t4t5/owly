@@ -111,6 +111,18 @@ pub struct Config {
     pub accept_addba: bool,
     /// Send unicast packets to one peer as A-MSDUs, up to the peer's limit.
     pub amsdu: bool,
+    /// Hand the radio unicast only as fast as it sends at the frames' rate,
+    /// and none it couldn't send before the peer leaves the channel. For a
+    /// radio that queues whatever it's handed and sends it when it gets to
+    /// it, the peer there or not: what it sends after the peer left is
+    /// retried to nobody, and every frame behind it waits. The packets wait
+    /// here instead, where several to one peer make an A-MSDU.
+    pub pace: bool,
+    /// How long to hand the radio nothing at all once it has had no room
+    /// for a frame, in µs; 0 to try again at once. For a driver that keeps
+    /// the frames it was handed until it has been handed none for a while
+    /// (rtw88): its queue, once full, otherwise stays full.
+    pub full_pause_us: u64,
     /// The largest frame the radio takes, MAC header included.
     pub max_frame: usize,
     /// Peers heard more weakly than this, in dBm, aren't taken on; known
@@ -134,6 +146,8 @@ impl Config {
             no_ack,
             accept_addba: false,
             amsdu: false,
+            pace: false,
+            full_pause_us: 0,
             max_frame: 2304,
             rssi_threshold: Some(-65),
             neighbour_echo: true,
@@ -200,6 +214,13 @@ pub const MAX_PEERS: usize = 512;
 /// later, so the host's queue isn't flooded.
 const BURST: usize = 64;
 const BURST_PAUSE_US: u64 = 500;
+/// With pacing: what a frame takes on the air besides its bytes (the
+/// preamble, the ACK and the wait for the medium), the most work the radio
+/// may hold, and how long before the peer leaves the channel it's to be
+/// done with it. As measured on an RTL8812BU at HT MCS 7 and 15.
+const PACE_OVERHEAD_US: u64 = 300;
+const PACE_BACKLOG_US: u64 = 6_000;
+const PACE_TAIL_US: u64 = 2_000;
 /// The most packets in one A-MSDU.
 const AMSDU_PACKETS: usize = 8;
 /// What a peer that announces no HT capabilities is assumed to take.
@@ -208,6 +229,12 @@ const AMSDU_DEFAULT_MAX: usize = 3839;
 struct Queued {
     packet: Ipv6Packet,
     at: Time,
+}
+
+/// With pacing: how long the radio takes over a frame of `len` bytes at
+/// `rate`.
+fn air_us(rate: TxRate, len: usize) -> u64 {
+    PACE_OVERHEAD_US + (len as u64 * 8_000).div_ceil(rate.kbps().max(1) as u64)
 }
 
 /// An AWDL node.
@@ -229,6 +256,8 @@ pub struct Node {
     next_echo: Time,
     /// Set when a burst was cut short.
     resume: Option<Time>,
+    /// With pacing: when the radio is done with what it has been handed.
+    air_busy: Time,
     /// The sync master and its channel, while its sequence has no slot on
     /// ours (a shared radio).
     no_overlap: Option<(MacAddr, u8)>,
@@ -255,6 +284,7 @@ impl Node {
             awdl_seq: 0,
             echo_seq: 0,
             resume: None,
+            air_busy: now,
             no_overlap: None,
             stats: Stats::default(),
         }
@@ -565,6 +595,7 @@ impl Node {
         }
         if now >= self.next_psf {
             let f = self.action_frame(now, frame::subtype::PSF);
+            self.on_air(now, &f);
             out.push(Action::Transmit { at: now, frame: f });
             let interval = PSF_INTERVAL_TU as u64 * TU;
             while self.next_psf <= now {
@@ -574,6 +605,7 @@ impl Node {
         if now >= self.next_mif {
             // In the middle of the slot.
             let f = self.action_frame(now, frame::subtype::MIF);
+            self.on_air(now, &f);
             out.push(Action::Transmit { at: now, frame: f });
             self.next_mif = now.plus(self.clock.next_slot_us(now) + SLOT_US / 2);
         }
@@ -724,6 +756,50 @@ impl Node {
         own != 0 && own == theirs
     }
 
+    /// With pacing: counts a frame handed to the radio into the work it
+    /// holds.
+    fn on_air(&mut self, now: Time, frame: &Frame) {
+        if self.cfg.pace {
+            let busy = Time(self.air_busy.0.max(now.0));
+            self.air_busy = busy.plus(air_us(frame.rate, frame.bytes.len()));
+        }
+    }
+
+    /// How long `peer` stays on our channel from `now`: to the end of the
+    /// run of slots both are on it, less the guard. `u64::MAX` when that's
+    /// every slot.
+    fn window_left(&self, peer: &Peer, now: Time) -> u64 {
+        let next = self.clock.next_slot_us(now);
+        for k in 0..crate::channel::SLOTS as u64 {
+            let then = now.plus(next + k * SLOT_US + SLOT_US / 2);
+            if !self.same_channel(peer, then) {
+                return (next + k * SLOT_US).saturating_sub(UNICAST_GUARD_US);
+            }
+        }
+        u64::MAX
+    }
+
+    /// With pacing: how long until a frame of `len` bytes to `peer` may be
+    /// handed to the radio, 0 for now. Not while the radio holds more work
+    /// than it may, and not when it couldn't be done with this frame before
+    /// the peer leaves the channel.
+    fn pace_wait(&self, peer: &Peer, now: Time, len: usize) -> u64 {
+        if !self.cfg.pace {
+            return 0;
+        }
+        let held = self.air_busy.since(now);
+        if held > PACE_BACKLOG_US {
+            return held - PACE_BACKLOG_US;
+        }
+        let rate = self.cfg.rate.for_peer(peer.ht.as_ref());
+        let left = self.window_left(peer, now);
+        if left != u64::MAX && held + air_us(rate, len) + PACE_TAIL_US > left {
+            // Past the window's end `unicast_wait` says how long.
+            return left.max(1);
+        }
+        0
+    }
+
     /// AWDL-16: how long until unicast to `peer` may go, 0 for now: in a
     /// slot both are on the same channel, clear of the 3 TU guard at its
     /// edges unless the neighbouring slot is shared too.
@@ -777,15 +853,14 @@ impl Node {
                 frame::data_frame(self.cfg.addr, q.packet.dst, seq, awdl_seq, &q.packet.data);
             self.stats.tx_multicast += 1;
             *sent += 1;
-            out.push(Action::Transmit {
-                at: now,
-                frame: Frame {
-                    bytes,
-                    to: q.packet.dst,
-                    rate: self.cfg.rate.for_peer(None),
-                    no_ack: false,
-                },
-            });
+            let frame = Frame {
+                bytes,
+                to: q.packet.dst,
+                rate: self.cfg.rate.for_peer(None),
+                no_ack: false,
+            };
+            self.on_air(now, &frame);
+            out.push(Action::Transmit { at: now, frame });
         }
     }
 
@@ -798,12 +873,12 @@ impl Node {
         let mut blocked: Vec<MacAddr> = Vec::new();
         while let Some(q) = items.pop_front() {
             let dst = q.packet.dst;
+            let len = frame::HEADER_LEN + q.packet.data.len();
             let open = *sent < BURST
                 && !blocked.contains(&dst)
-                && self
-                    .peers
-                    .get(&dst)
-                    .is_some_and(|p| self.unicast_wait(p, now) == 0);
+                && self.peers.get(&dst).is_some_and(|p| {
+                    self.unicast_wait(p, now) == 0 && self.pace_wait(p, now, len) == 0
+                });
             if !open {
                 if !blocked.contains(&dst) {
                     blocked.push(dst);
@@ -844,15 +919,14 @@ impl Node {
             };
             self.stats.tx_unicast += batch.len() as u64;
             *sent += 1;
-            out.push(Action::Transmit {
-                at: now,
-                frame: Frame {
-                    bytes,
-                    to: dst,
-                    rate,
-                    no_ack: self.cfg.no_ack,
-                },
-            });
+            let frame = Frame {
+                bytes,
+                to: dst,
+                rate,
+                no_ack: self.cfg.no_ack,
+            };
+            self.on_air(now, &frame);
+            out.push(Action::Transmit { at: now, frame });
         }
         self.unicast = waiting;
     }
@@ -876,7 +950,11 @@ impl Node {
             }
             seen.push(q.packet.dst);
             if let Some(p) = self.peers.get(&q.packet.dst) {
-                t = t.min(now.plus(self.unicast_wait(p, now).max(1)));
+                let mut wait = self.unicast_wait(p, now);
+                if wait == 0 {
+                    wait = self.pace_wait(p, now, frame::HEADER_LEN + q.packet.data.len());
+                }
+                t = t.min(now.plus(wait.max(1)));
             }
         }
         t.max(now)

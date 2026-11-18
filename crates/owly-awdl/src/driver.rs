@@ -140,6 +140,7 @@ where
                 multicast: VecDeque::new(),
                 full: false,
                 overlap: None,
+                quiet_until: Time(0),
                 tx: TxStats::default(),
                 timer: Time(1),
                 lateness: Lateness::default(),
@@ -214,6 +215,8 @@ struct Driver<A, N> {
     multicast: VecDeque<(Time, Frame)>,
     /// The radio's queue was full at the last try.
     full: bool,
+    /// The radio is handed nothing until then (`Config::full_pause_us`).
+    quiet_until: Time,
     /// The no-overlap last logged.
     overlap: Option<(MacAddr, u8)>,
     tx: TxStats,
@@ -275,7 +278,7 @@ impl<A: Air, N: Netif> Driver<A, N> {
             // Built for this moment, its sync TLVs and timestamp with it: by
             // the next try it would be stale, and the next PSF or MIF is
             // never far off. Legacy dropped them too.
-            if self.air.send(frame).is_err() {
+            if self.send(frame).is_err() {
                 self.full = true;
                 self.tx.again += 1;
                 self.tx.dropped += 1;
@@ -292,11 +295,32 @@ impl<A: Air, N: Netif> Driver<A, N> {
             queue.push_back((at, frame));
             return;
         }
-        if let Err(frame) = self.air.send(frame) {
+        if let Err(frame) = self.send(frame) {
             self.full = true;
             self.tx.again += 1;
+            let queue = if frame.to.is_multicast() {
+                &mut self.multicast
+            } else {
+                &mut self.unicast
+            };
             queue.push_back((at, frame));
         }
+    }
+
+    /// Hands the radio a frame, unless it's being left alone to empty its
+    /// queue: a driver that frees what it holds only once it's handed
+    /// nothing for a while gets that while as soon as it's full.
+    fn send(&mut self, frame: Frame) -> Result<(), Frame> {
+        if self.now() < self.quiet_until {
+            return Err(frame);
+        }
+        let sent = self.air.send(frame);
+        let pause = self.node.config().full_pause_us;
+        if sent.is_err() && pause > 0 {
+            tracing::debug!("the radio is full: handing it nothing for {pause} µs");
+            self.quiet_until = self.now().plus(pause);
+        }
+        sent
     }
 
     /// Tries again what the radio had no room for, while it may still go,
@@ -310,7 +334,7 @@ impl<A: Air, N: Netif> Driver<A, N> {
                 self.tx.dropped += 1;
                 continue;
             }
-            if let Err(frame) = self.air.send(frame) {
+            if let Err(frame) = self.send(frame) {
                 self.multicast.push_front((at, frame));
                 self.full = true;
                 self.tx.again += 1;
@@ -324,7 +348,7 @@ impl<A: Air, N: Netif> Driver<A, N> {
                 None => self.tx.dropped += 1,
                 Some(_) if now.since(at) > UNICAST_HOLD_US => self.tx.dropped += 1,
                 Some(0) if !self.full => {
-                    if let Err(frame) = self.air.send(frame) {
+                    if let Err(frame) = self.send(frame) {
                         self.full = true;
                         self.tx.again += 1;
                         kept.push_back((at, frame));
@@ -338,6 +362,9 @@ impl<A: Air, N: Netif> Driver<A, N> {
 
     /// When to try the frames waiting again, if any are.
     fn retry_at(&self) -> Option<tokio::time::Instant> {
+        if self.now() < self.quiet_until {
+            return Some(self.instant(self.quiet_until));
+        }
         if self.full || !self.multicast.is_empty() {
             return Some(tokio::time::Instant::now() + RETRY_PAUSE);
         }

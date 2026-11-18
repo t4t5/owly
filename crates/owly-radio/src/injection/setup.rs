@@ -17,8 +17,14 @@ use crate::journal::{Journal, Step};
 use crate::nl80211::{IfType, Kind};
 use crate::probe::{self, Station, social_channel};
 use crate::quirks::Mode;
+use crate::rtw88;
 use crate::rundir::Process;
 use crate::sys::{IBSS_OWN_BSSID, Ops};
+
+/// How long the radio is handed nothing once it's full, where the quirks
+/// ask (`tx_purge`): a little longer than the 500 ms rtw88 takes to free
+/// the frames it holds.
+const TX_PURGE_US: u64 = 560_000;
 
 /// What a setup leaves for AWDL.
 pub(crate) struct Prepared {
@@ -184,6 +190,7 @@ impl Setup<'_> {
             self.monitor(Kind::Monitor { active: false }, sta_mac)?;
             freq
         };
+        self.rtw88()?;
         let channel = social_channel(freq).expect("a social channel");
         tracing::info!(
             station = %name, driver = %self.station.driver, channel,
@@ -230,6 +237,10 @@ impl Setup<'_> {
             awdl.no_ack = no_ack;
         }
         awdl.amsdu = self.settings.tx_amsdu;
+        awdl.pace = self.station.quirk.tx_pace;
+        if self.station.quirk.tx_purge {
+            awdl.full_pause_us = TX_PURGE_US;
+        }
         Prepared {
             mode,
             awdl,
@@ -283,6 +294,40 @@ impl Setup<'_> {
         })?;
         let _ = ops.write(&dir.join("runtime-pm"), "0");
         let _ = ops.write(&dir.join("deep-sleep"), "0");
+        Ok(())
+    }
+
+    /// On an rtw88 card the session has to itself: radio.toml's data rate,
+    /// which the driver takes no other way, and the retry limit the quirks
+    /// give (see [`crate::rtw88`]). After the interfaces are up, so that
+    /// teardown puts both back before they go.
+    fn rtw88(&mut self) -> Result<(), Error> {
+        let ops = self.ops;
+        let rate = self.settings.tx_rate.and_then(rtw88::rate_code);
+        let tries = self.station.quirk.rtw88_retry_limit;
+        if !self.station.driver.starts_with("rtw88") || (rate.is_none() && tries.is_none()) {
+            return Ok(());
+        }
+        let dir = ops.rtw88_dir(&self.station.phy);
+        if ops.read(&dir.join("fix_rate")).is_none() {
+            tracing::warn!(
+                "rtw88 has no debugfs in {}: its rate and retries stay the driver's own",
+                dir.display()
+            );
+            return Ok(());
+        }
+        // Not changed unless it can be put back.
+        let retry_limit = tries.and_then(|_| rtw88::retry_limit(ops, &dir));
+        self.record(Step::Rtw88 {
+            dir: dir.clone(),
+            retry_limit: retry_limit.clone(),
+        })?;
+        if let Some(code) = rate {
+            let _ = ops.write(&dir.join("fix_rate"), &code.to_string());
+        }
+        if let (Some(tries), Some(_)) = (tries, retry_limit) {
+            rtw88::set_retry_limit(ops, &dir, &rtw88::tries(tries));
+        }
         Ok(())
     }
 

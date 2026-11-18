@@ -69,6 +69,8 @@ pub trait Ops: Send + Sync {
     fn sysctl(&self, key: &str, value: &str) -> io::Result<()>;
     /// mt76's debugfs directory for this wiphy.
     fn mt76_dir(&self, phy: &str) -> PathBuf;
+    /// rtw88's debugfs directory for this wiphy.
+    fn rtw88_dir(&self, phy: &str) -> PathBuf;
     fn read(&self, path: &Path) -> Option<String>;
     fn write(&self, path: &Path, value: &str) -> io::Result<()>;
 
@@ -90,6 +92,17 @@ pub struct System;
 const NET: &str = "/sys/class/net";
 
 impl System {
+    /// A wiphy's debugfs directory, where its driver keeps its own.
+    fn debugfs(&self, phy: &str) -> PathBuf {
+        let debug = Path::new("/sys/kernel/debug");
+        if !debug.join("ieee80211").exists() {
+            // Needs CAP_SYS_ADMIN, which owlyd doesn't have: its unit has
+            // systemd mount debugfs instead. This is for running as root.
+            let _ = self.run("mount", &["-t", "debugfs", "none", "/sys/kernel/debug"]);
+        }
+        debug.join("ieee80211").join(phy)
+    }
+
     fn run(&self, program: &str, args: &[&str]) -> io::Result<()> {
         let out = Command::new(program)
             .args(args)
@@ -279,13 +292,11 @@ impl Ops for System {
     }
 
     fn mt76_dir(&self, phy: &str) -> PathBuf {
-        let debug = Path::new("/sys/kernel/debug");
-        if !debug.join("ieee80211").exists() {
-            // Needs CAP_SYS_ADMIN, which owlyd doesn't have: its unit has
-            // systemd mount debugfs instead. This is for running as root.
-            let _ = self.run("mount", &["-t", "debugfs", "none", "/sys/kernel/debug"]);
-        }
-        debug.join("ieee80211").join(phy).join("mt76")
+        self.debugfs(phy).join("mt76")
+    }
+
+    fn rtw88_dir(&self, phy: &str) -> PathBuf {
+        self.debugfs(phy).join("rtw88")
     }
 
     fn read(&self, path: &Path) -> Option<String> {

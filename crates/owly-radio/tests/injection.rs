@@ -329,7 +329,20 @@ impl Ops for FakeOps {
     fn mt76_dir(&self, phy: &str) -> PathBuf {
         PathBuf::from(format!("/debug/{phy}/mt76"))
     }
+    fn rtw88_dir(&self, phy: &str) -> PathBuf {
+        PathBuf::from(format!("/debug/{phy}/rtw88"))
+    }
     fn read(&self, path: &Path) -> Option<String> {
+        // Only an rtw88 card has rtw88's directory, with the register that
+        // was last asked for in read_reg.
+        if path.starts_with("/debug/phy0/rtw88") {
+            let said = if path.ends_with("read_reg") {
+                "reg 0x42a: 0x2020"
+            } else {
+                "Fix rate disabled, fix_rate = 255"
+            };
+            return self.driver.starts_with("rtw88").then(|| said.into());
+        }
         if path.starts_with("/debug") {
             return Some("1".into());
         }
@@ -916,6 +929,92 @@ async fn the_cell_is_as_the_drivers_quirks_say() {
     let mut backend = fx.backend_with(settings);
     backend.up().await.unwrap();
     assert_eq!(joins(&fx), [format!("join {IBSS} 2437 bssid {own}")]);
+    backend.down().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rtw88_gets_its_rate_and_retry_limit_through_debugfs() {
+    let rtw88 = |fx: &Fx| -> Vec<String> {
+        let calls = fx.ops.calls().into_iter();
+        calls.filter(|c| c.contains("/rtw88/")).collect()
+    };
+    let quirks = "tx_pace = true\ntx_purge = true\nrtw88_retry_limit = 4\n";
+    // The driver takes no rate from a frame and ignores "no ACK": once the
+    // interfaces are up, radio.toml's rate is fixed in fix_rate, and the
+    // retry limit the quirks give in its register.
+    let fx = Fx::with(|o| o.driver = "rtw88_8822bu".into());
+    let mut settings = fx.settings_with_quirks("rtw88_8822bu", quirks);
+    settings.tx_rate = TxRate::parse("mcs15");
+    let mut backend = fx.backend_with(settings);
+    backend.up().await.unwrap();
+    let calls = fx.ops.calls();
+    assert_eq!(
+        calls[calls.len() - 4..],
+        [
+            format!("up {MONITOR}"),
+            "write /debug/phy0/rtw88/read_reg 0x42a 2".into(),
+            "write /debug/phy0/rtw88/fix_rate 27".into(),
+            "write /debug/phy0/rtw88/write_reg 0x42a 0x0404 2".into(),
+        ]
+    );
+    assert_eq!(
+        fx.journal().unwrap().last(),
+        Some(&Step::Rtw88 {
+            dir: "/debug/phy0/rtw88".into(),
+            retry_limit: Some("0x2020".into()),
+        })
+    );
+    // Unicast is paced at that rate, and a full radio left alone to free
+    // what it holds.
+    let awdl = fx.awdl();
+    assert_eq!(
+        awdl.rate,
+        TxRate::Ht {
+            mcs: 15,
+            sgi: false
+        }
+    );
+    assert!(awdl.pace);
+    assert_eq!(awdl.full_pause_us, 560_000);
+    // Both are put back before the interfaces go.
+    backend.down().await.unwrap();
+    assert_eq!(
+        fx.since(calls.len())[..3],
+        [
+            "write /debug/phy0/rtw88/fix_rate 255".to_string(),
+            "write /debug/phy0/rtw88/write_reg 0x42a 0x2020 2".into(),
+            format!("down {MONITOR}"),
+        ]
+    );
+
+    // Without a rate in radio.toml the driver keeps its own, and without
+    // the quirk its retry limit.
+    let fx = Fx::with(|o| o.driver = "rtw88_8822bu".into());
+    let mut backend = fx.backend_with(fx.settings_with_quirks("rtw88_8822bu", quirks));
+    backend.up().await.unwrap();
+    assert_eq!(
+        rtw88(&fx),
+        [
+            "write /debug/phy0/rtw88/read_reg 0x42a 2",
+            "write /debug/phy0/rtw88/write_reg 0x42a 0x0404 2",
+        ]
+    );
+    backend.down().await.unwrap();
+    let fx = Fx::with(|o| o.driver = "rtw88_8822bu".into());
+    let mut backend = fx.backend_with(fx.settings_with_quirks("rtw88_8822bu", ""));
+    backend.up().await.unwrap();
+    assert_eq!(rtw88(&fx), Vec::<String>::new());
+    assert!(!fx.awdl().pace && fx.awdl().full_pause_us == 0);
+    backend.down().await.unwrap();
+
+    // Another driver's card has no such directory, and is asked frame by
+    // frame as ever.
+    let fx = Fx::with(intel);
+    let mut settings = fx.settings();
+    settings.tx_rate = TxRate::parse("mcs7");
+    let mut backend = fx.backend_with(settings);
+    backend.up().await.unwrap();
+    assert_eq!(rtw88(&fx), Vec::<String>::new());
     backend.down().await.unwrap();
 }
 

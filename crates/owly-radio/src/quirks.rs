@@ -49,6 +49,19 @@ pub struct Quirk {
     /// monitor), as legacy did, and not in shared mode.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tx_noack: Option<bool>,
+    /// Hand the radio unicast only as fast as it sends it, and none it
+    /// can't send before the peer leaves the channel, for a driver that
+    /// queues whatever it's handed.
+    #[serde(default)]
+    pub tx_pace: bool,
+    /// Send nothing for a while once the driver has no room for a frame,
+    /// for one that frees the frames it holds only then (rtw88).
+    #[serde(default)]
+    pub tx_purge: bool,
+    /// How often the hardware sends a frame nobody ACKs, where the session
+    /// has the card to itself: rtw88 ignores `tx_noack`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rtw88_retry_limit: Option<u8>,
     /// The driver can encode injected frames with LDPC. For owly-awdl's rate
     /// selection, which doesn't use it yet.
     #[serde(default)]
@@ -199,9 +212,11 @@ mod tests {
         assert!(q.cell_own_bssid && q.cell_ht40);
         // mac80211 has no station entry to answer a Block Ack request for.
         assert!(q.rx_ampdu);
+        assert!(q.tx_pace && q.tx_purge);
+        assert_eq!(q.rtw88_retry_limit, Some(4));
         // No other driver's entry asks for any of it.
         let (intel, _) = quirks.get("iwlwifi", None);
-        assert!(!intel.cell_own_bssid && !intel.cell_ht40);
+        assert!(!intel.cell_own_bssid && !intel.cell_ht40 && !intel.tx_pace && !intel.tx_purge);
     }
 
     #[test]

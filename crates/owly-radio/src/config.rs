@@ -18,6 +18,11 @@
 //! it, exclusive mode asks for the country the kernel had from the AP, which
 //! it forgets once the station is down; a station that isn't connected has
 //! none to keep. Shared mode follows the AP's.
+//!
+//! `tx_rate` is asked of the driver frame by frame, which rtw88 ignores: on
+//! an rtw88 card in exclusive mode it's set through the driver's debugfs
+//! instead, for every data frame and with no falling back to a lower rate,
+//! so a peer too far away for it may hear nothing.
 
 use std::path::{Path, PathBuf};
 

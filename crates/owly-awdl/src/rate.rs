@@ -41,6 +41,21 @@ impl TxRate {
             .then_some(TxRate::Legacy(mbps * 2))
     }
 
+    /// The rate in kbit/s.
+    pub fn kbps(self) -> u32 {
+        match self {
+            TxRate::Legacy(r) => r as u32 * 500,
+            TxRate::Ht { mcs, sgi } => {
+                // One stream's rates on 20 MHz, times the streams.
+                let one = [
+                    6_500, 13_000, 19_500, 26_000, 39_000, 52_000, 58_500, 65_000,
+                ];
+                let rate = one[mcs as usize % 8] * (mcs as u32 / 8 + 1);
+                if sgi { rate * 10 / 9 } else { rate }
+            }
+        }
+    }
+
     /// The rate to use towards a peer with these HT capabilities (or none).
     pub fn for_peer(self, peer: Option<&HtCapabilities>) -> TxRate {
         match (self, peer) {
@@ -76,6 +91,21 @@ impl fmt::Display for TxRate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rates_in_kbits() {
+        assert_eq!(TxRate::BASIC.kbps(), 12_000);
+        assert_eq!(TxRate::Ht { mcs: 7, sgi: false }.kbps(), 65_000);
+        assert_eq!(
+            TxRate::Ht {
+                mcs: 15,
+                sgi: false
+            }
+            .kbps(),
+            130_000
+        );
+        assert_eq!(TxRate::Ht { mcs: 15, sgi: true }.kbps(), 144_444);
+    }
 
     #[test]
     fn owls_rate_syntax() {
