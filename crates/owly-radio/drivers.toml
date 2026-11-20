@@ -120,13 +120,15 @@ issues = [
 notes = "Intel Wireless-AC 8260 (NUC6i7KYK, 8086:24f3, kernel 6.12)."
 
 [devices."8086:24fd"]
-status = "broken"
+status = "untested"
 mode = "exclusive"
 channels = [6]
+unicast_groups = true
+ibss_rejoin_secs = 9
 issues = [
-    "This Intel Wireless-AC 8265's firmware (8265-36) stalls a transmit queue and resets about 10 s after the ad-hoc cell starts on channel 6.",
+    "This Intel Wireless-AC 8265's firmware (8265-36) never sends the ad-hoc cell's group frames, and stops sending to its stations at the cell's first beacon. Owly sends group frames to each peer instead and rejoins the cell every 9 s, which restarts the firmware: a transfer pauses for about 1 s every 10 s.",
 ]
-notes = "Intel Dual Band Wireless-AC 8265 (EliteBook x360 1030 G3, 8086:24fd, kernel 6.12). The reset repeats until the driver is reloaded. With a hidden AP forced in the cell's place, it runs without resetting but hears no AWDL action frames from the phone."
+notes = "Intel Dual Band Wireless-AC 8265 (EliteBook x360 1030 G3, 8086:24fd, kernel 6.12; ASUS X580VD, kernel 7.0.14). Without the quirks the group queue stalls and the firmware resets every ~21 s, until the driver is reloaded. With a hidden AP forced in the cell's place, it runs without resetting but hears no AWDL action frames from the phone. With them, on the X580VD: four photos from an iPhone (10.3 MB) and one to it (1.1 MB in 12 s) in one session. Leaving the cell asserts the firmware (ADVANCED_SYSASSERT 0x3437); owlymon0 and awdl0 survive the restart. Firmware 8265-34 stalls the same way."
 
 [drivers.rtw88_8822be]
 status = "tested"

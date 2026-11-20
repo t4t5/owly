@@ -271,6 +271,26 @@ impl<A: Air, N: Netif> Driver<A, N> {
     }
 
     fn transmit(&mut self, at: Time, frame: Frame) {
+        let cfg = self.node.config();
+        if cfg.unicast_groups && frame.to.is_multicast() {
+            let no_ack = cfg.no_ack;
+            // A peer address comes from the air. A group address would
+            // recurse into this branch and could never be a unicast copy.
+            let peers: Vec<MacAddr> = self
+                .node
+                .peers()
+                .map(|p| p.mac)
+                .filter(|mac| !mac.is_multicast())
+                .collect();
+            for mac in peers {
+                let mut copy = frame.clone();
+                copy.bytes[4..10].copy_from_slice(&mac.0);
+                copy.to = mac;
+                copy.no_ack = no_ack;
+                self.transmit(at, copy);
+            }
+            return;
+        }
         if frame.is_action() {
             // Built for this moment, its sync TLVs and timestamp with it: by
             // the next try it would be stale, and the next PSF or MIF is
