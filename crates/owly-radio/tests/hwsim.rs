@@ -213,6 +213,7 @@ fn settings(station: &str, mode: &str, run: &Path) -> Settings {
         hostapd: PathBuf::from("/usr/bin/hostapd"),
         quirks,
         run_dir: RunDir::new(run),
+        election_metric: None,
     }
 }
 

@@ -432,6 +432,7 @@ impl Fx {
             hostapd: self.dir.path().join("hostapd"),
             quirks: Quirks::load(Path::new("/nonexistent")).unwrap(),
             run_dir: self.run(),
+            election_metric: None,
         }
     }
 
