@@ -131,8 +131,8 @@ fn neighbours_are_echoed_and_the_replies_kept_from_the_stack() {
     );
     sim.run_for(8_000_000);
     // Each node's echoes reach the other's IP stack, which would answer.
-    for i in 0..2 {
-        let echoes = sim.nodes[i]
+    for (i, node) in sim.nodes.iter().enumerate() {
+        let echoes = node
             .delivered
             .iter()
             .filter(|(_, p)| p.data.len() > 40 && p.data[40] == 128 && p.data.ends_with(b"owly"))

@@ -119,6 +119,7 @@ Make sure you set your phone's Airdrop setting to "Everyone for 10 minutes".
 | Realtek RTL8852BE | `rtw89_8852be` | ✅ Shared | ASUS PRIME B550M-A WIFI II, `10ec:b852`, CachyOS (kernel 7.2.9) |
 | Realtek RTL8852CE | `rtw89_8852ce` | ✅ Shared and exclusive | • Legion Slim 5 16AHP9, `10ec:c852`, Omarchy 4.0.4 (kernel 7.2.5)<br>• ThinkBook 16 G7 IML, `10ec:c852`, Ubuntu 24.04.5 (kernel 7.0) |
 | Realtek RTL8922AE | `rtw89_8922ae` | ✅ Exclusive | ASUS System Version, `10ec:8922`, CachyOS (kernel 7.3.0) |
+| Realtek RTL8188FTV (USB) | `rtl8xxxu` | ✅ Exclusive (opt-in) | • INTEL H81, `0bda:f179`, Linux Mint 22.3 (kernel 6.14.0): partly<br>• LENOVO ThinkPad T495, `0bda:f179`, Fedora Linux 44 (kernel 6.19.10) |
 | Realtek RTL8852BU (USB) | `rtw89_8852bu` | ✅ Exclusive (opt-in), as a second card | USB adapter, `35bc:0108`, NixOS 26.05 (kernel 7.2.9) |
 | Realtek RTL8812BU (USB) | `rtw88_8822bu` | ✅ Exclusive | • ASUSTeK COMPUTER INC. ASUS Vivobook 14 X1404VAPBF_X1404VA, `2357:0138`, openSUSE Tumbleweed (kernel 7.3.0), shared: partly<br>• ASUSTeK COMPUTER INC. ASUS Vivobook 14 X1404VAPBF_X1404VA, `2357:0138`, openSUSE Tumbleweed (kernel 7.3.0), exclusive |
 | Qualcomm Atheros AR9287 | `ath9k` | ✅ Shared | Acer Aspire 4750, `168c:002e`, Ubuntu 24.04.5 LTS (kernel 7.0.0) |
@@ -132,7 +133,6 @@ Make sure you set your phone's Airdrop setting to "Everyone for 10 minutes".
 | Intel BE200 | `iwlwifi` | ✅ Exclusive | • GEEKOM IT13 Max, `8086:272b`, Omarchy 4.0.4 (kernel 7.2.5)<br>• LENOVO Legion Pro 7 16IAX10H, `8086:272b`, Arch Linux (kernel 7.3.4) |
 | MediaTek MT7921 | `mt7921e` | ⚠️ Exclusive, opt-in; shared fails ([#14](https://github.com/t4t5/owly/issues/14)) | `14c3:7961`, CachyOS (kernel 7.2.9) |
 | MediaTek MT7922 (RZ616) | `mt7921e` | ⚠️ Exclusive, opt-in; shared fails ([#14](https://github.com/t4t5/owly/issues/14)) | Minisforum MS-A2, `14c3:0616`, NixOS 26.05 (kernels 6.18 and 7.2.5) |
-| Realtek RTL8188FTV (USB) | `rtl8xxxu` | ⚠️ Exclusive (opt-in) | INTEL H81, `0bda:f179`, Linux Mint 22.3 (kernel 6.14.0): partly |
 | MediaTek MT7927 | `mt7925e` | ❌ Shared: never heard; active monitor (opt-in) sends, but receiving times out ([#44](https://github.com/t4t5/owly/issues/44)) | TP-Link Archer TBE550E, `14c3:7927`, CachyOS (kernel 7.2.9) |
 | Realtek RTL8821CE | `rtw88_8821ce` | ❌ Shared: OWL syncs but no transfer, Wi-Fi often lost after ([#60](https://github.com/t4t5/owly/issues/60)); exclusive receives nothing | HP laptop, `10ec:c821`, Omarchy (kernel 7.2.5) |
 | Realtek RTL8821AU (USB) | `rtw88_8821au` | ❌ Exclusive: AWDL syncs but no data gets through ([#93](https://github.com/t4t5/owly/issues/93)); shared untested | TP-Link Archer T2U Plus, `2357:0120`, Ubuntu 24.04.5 (kernel 7.0) |
