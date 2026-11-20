@@ -16,7 +16,7 @@ path = "src/main.rs"
 clap = { version = "4", features = ["derive"] }
 futures-util = { version = "0.3", default-features = false }
 getrandom = "0.3"
-nix = { version = "0.31", default-features = false, features = ["hostname", "net", "signal", "user"] }
+nix = { version = "0.31", default-features = false, features = ["hostname", "net", "poll", "signal", "user"] }
 owly-airdrop = { path = "../owly-airdrop", features = ["mdns"] }
 owly-awdl = { path = "../owly-awdl" }
 owly-radio = { path = "../owly-radio" }

@@ -29,7 +29,8 @@ use owly_radio::radio::Announce;
 use owlyd::api::{self, LinkInfo, RadioProxy};
 use tokio::io::AsyncBufReadExt;
 
-use crate::bluez::{BluezAdvertiser, Registration};
+use crate::bluez::BluezAdvertiser;
+use crate::hci::HciAdvertiser;
 
 /// Apple's receivers listen here (MDNS-1), and an AWDL peer with no mDNS
 /// is tried here (DISC-5).
@@ -382,23 +383,45 @@ fn parse_mac(text: &str) -> io::Result<MacAddr> {
         .map_err(|_| io::Error::other(format!("bad MAC address {text}")))
 }
 
+/// Keeps the advert going until dropped, whichever backend sent it.
+type Advertising = Box<dyn Send>;
+
 /// BLE-1: the advert that makes Apple receivers turn on AirDrop. Without
 /// Bluetooth, sending still works to receivers that are already listening.
-async fn advertise(skip: bool) -> Option<Registration> {
+/// BlueZ is tried first, then a raw HCI socket for machines without it.
+async fn advertise(skip: bool) -> Option<Advertising> {
     if skip {
         return None;
     }
-    let result = async {
+    let tag = match random_tag() {
+        Ok(tag) => tag,
+        Err(e) => {
+            eprintln!("not advertising over Bluetooth: {e}");
+            return None;
+        }
+    };
+    let bluez = async {
         BluezAdvertiser::new()
             .await?
-            .advertise(Advert::anonymous(random_tag()?))
+            .advertise(Advert::anonymous(tag))
             .await
     }
     .await;
-    match result {
-        Ok(guard) => Some(guard),
+    let bluez_error = match bluez {
+        Ok(guard) => return Some(Box::new(guard)),
+        Err(e) => e,
+    };
+    let hci = async {
+        HciAdvertiser::new()
+            .await?
+            .advertise(Advert::anonymous(tag))
+            .await
+    }
+    .await;
+    match hci {
+        Ok(guard) => Some(Box::new(guard)),
         Err(e) => {
-            eprintln!("not advertising over Bluetooth: {e}");
+            eprintln!("not advertising over Bluetooth: {bluez_error}; over raw HCI: {e}");
             None
         }
     }
