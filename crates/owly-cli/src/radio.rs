@@ -28,7 +28,7 @@ pub fn exit_code(e: &zbus::Error) -> (u8, String) {
 
 /// Takes the radio and holds it until Ctrl-C, SIGTERM, the duration or
 /// the link's end.
-pub async fn up(bus: Option<&str>, duration: u32) -> Result<ExitCode, String> {
+pub async fn up(bus: Option<&str>, duration: u32, json: bool) -> Result<ExitCode, String> {
     // Cached, for the stream of peer changes.
     let conn = api::connect(bus).await.map_err(|e| unreachable(&e))?;
     let radio = RadioProxy::new(&conn).await.map_err(|e| unreachable(&e))?;
@@ -59,6 +59,15 @@ pub async fn up(bus: Option<&str>, duration: u32) -> Result<ExitCode, String> {
                 a.pause.as_secs()
             );
         }
+    }
+    if json
+        && let Err(error) =
+            crate::json::write_event(&mut std::io::stdout(), &crate::json::Event::Ready)
+    {
+        // A frontend that closed its output pipe must not leave a lease held.
+        let _ = radio.release(lease).await;
+        wifi::restore(wifi).await;
+        return Err(error.to_string());
     }
     let mut term = signal(SignalKind::terminate()).map_err(|e| e.to_string())?;
     let mut peers = radio.receive_peers_changed().await;

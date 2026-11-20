@@ -19,6 +19,7 @@ mod airdrop;
 mod bluez;
 mod capture;
 mod doctor;
+mod json;
 mod radio;
 mod test_card;
 mod wifi;
@@ -68,6 +69,9 @@ enum Radio {
     },
     /// Bring awdl0 up and hold it until Ctrl-C.
     Up {
+        /// Emit a JSON ready event after the radio is acquired.
+        #[arg(long)]
+        json: bool,
         /// Give it back after this many seconds.
         #[arg(long = "for", value_name = "SECONDS", default_value_t = 0)]
         duration: u32,
@@ -91,7 +95,7 @@ fn main() -> ExitCode {
             Command::Doctor { json } | Command::Radio(Radio::Probe { json }) => {
                 doctor::run(bus, json).await
             }
-            Command::Radio(Radio::Up { duration }) => radio::up(bus, duration).await,
+            Command::Radio(Radio::Up { duration, json }) => radio::up(bus, duration, json).await,
             Command::Radio(Radio::Peers) => radio::peers(bus).await,
             Command::Receive(args) => airdrop::receive(bus, args).await,
             Command::Send(args) => airdrop::send(bus, args).await,
@@ -106,5 +110,26 @@ fn main() -> ExitCode {
             eprintln!("owly: {e}");
             ExitCode::from(2)
         }
+    }
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    #[test]
+    fn json_is_opt_in_and_conflicts_with_automatic_acceptance() {
+        for command in [
+            vec!["owly", "browse"],
+            vec!["owly", "receive"],
+            vec!["owly", "radio", "up"],
+        ] {
+            assert!(Cli::try_parse_from(&command).is_ok());
+            let mut json = command;
+            json.push("--json");
+            assert!(Cli::try_parse_from(json).is_ok());
+        }
+        assert!(Cli::try_parse_from(["owly", "receive", "--json", "--accept"]).is_err());
+        assert!(Cli::try_parse_from(["owly", "receive", "--accept"]).is_ok());
     }
 }
