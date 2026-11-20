@@ -98,7 +98,11 @@ fn config(n: u8) -> Config {
     Config::new(mac(n), &format!("node{n}"), radio)
 }
 
-fn host(n: u8, tx: mpsc::UnboundedSender<Received>, rx: mpsc::UnboundedReceiver<Received>) -> Host {
+fn host(
+    config: Config,
+    tx: mpsc::UnboundedSender<Received>,
+    rx: mpsc::UnboundedReceiver<Received>,
+) -> Host {
     let (peers_tx, peers) = watch::channel(Vec::new());
     let (send, outbound) = mpsc::unbounded_channel();
     let (delivered_tx, delivered) = mpsc::unbounded_channel();
@@ -114,7 +118,7 @@ fn host(n: u8, tx: mpsc::UnboundedSender<Received>, rx: mpsc::UnboundedReceiver<
     };
     let netif_read = read.clone();
     let running = driver::spawn(
-        config(n),
+        config,
         move || {
             let netif = MemNetif {
                 outbound,
@@ -141,10 +145,17 @@ fn host(n: u8, tx: mpsc::UnboundedSender<Received>, rx: mpsc::UnboundedReceiver<
 
 /// Two hosts whose nodes have met.
 async fn pair() -> (Host, Host) {
+    pair_with(|_| {}).await
+}
+
+/// The same, with the first's settings changed.
+async fn pair_with(change: impl FnOnce(&mut Config)) -> (Host, Host) {
     let (a_tx, b_rx) = mpsc::unbounded_channel();
     let (b_tx, a_rx) = mpsc::unbounded_channel();
-    let mut a = host(1, a_tx, a_rx);
-    let mut b = host(2, b_tx, b_rx);
+    let mut first = config(1);
+    change(&mut first);
+    let mut a = host(first, a_tx, a_rx);
+    let mut b = host(config(2), b_tx, b_rx);
     let met = tokio::time::timeout(Duration::from_secs(5), async {
         a.peers.wait_for(|p| p.len() == 1).await.unwrap();
         b.peers.wait_for(|p| p.len() == 1).await.unwrap();
@@ -241,6 +252,27 @@ async fn unicast_waits_while_the_radio_is_full_and_none_is_lost() {
     send_many(&a, 20);
     tokio::time::sleep(Duration::from_millis(300)).await;
     a.full.store(false, Ordering::Relaxed);
+    let got = received(&mut b, 20, Duration::from_secs(3)).await;
+    assert_eq!(got, (0..20).collect::<Vec<_>>());
+    a.running.stop();
+    b.running.stop();
+}
+
+// A driver that frees the frames it holds only once it's handed none for a
+// while (rtw88) gets that while as soon as it's full, and its queue would
+// stay full otherwise.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_full_radio_is_handed_nothing_for_as_long_as_the_node_is_told() {
+    let (a, mut b) = pair_with(|c| c.full_pause_us = 400_000).await;
+    a.full.store(true, Ordering::Relaxed);
+    send_many(&a, 20);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    a.full.store(false, Ordering::Relaxed);
+    // There's room again, but nothing goes yet: no packet, and no PSF or
+    // MIF either.
+    let sent = a.sent.load(Ordering::Relaxed);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(a.sent.load(Ordering::Relaxed), sent);
     let got = received(&mut b, 20, Duration::from_secs(3)).await;
     assert_eq!(got, (0..20).collect::<Vec<_>>());
     a.running.stop();

@@ -22,5 +22,6 @@ pub mod quirks;
 pub mod radio;
 pub mod radiotap;
 pub mod rtnl;
+mod rtw88;
 pub mod rundir;
 pub mod sys;

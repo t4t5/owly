@@ -30,6 +30,20 @@
 #                try, in order, of those the card may transmit on (default
 #                [44, 149, 6]: an iPhone gives channel 6 a slot or two in
 #                sixteen, and 44 or 149 several). Shared mode uses the AP's
+#   cell_own_bssid
+#                exclusive mode: the ad-hoc cell on a BSSID of its own, not
+#                AWDL's, for drivers that beacon every 100 TU whatever
+#                interval the cell asks for. Beside such a cell on AWDL's
+#                BSSID, an iPhone ACKs this computer's unicast but doesn't
+#                answer it, and loses its own Wi-Fi; whether the beacons do
+#                it or mac80211 taking every peer for a member of the cell
+#                isn't known. Off it, mac80211 has no station entry for a
+#                peer, so the hardware must ACK, and answer A-MPDUs
+#                (rx_ampdu), without one (default false)
+#   cell_ht40    exclusive mode: the ad-hoc cell 40 MHz wide on 5 GHz, HT20
+#                where that fails. Owly's HT capabilities invite 40 MHz
+#                frames, and an iPhone sends them: a 20 MHz cell hears only
+#                its retries, at its lowest rates (default false)
 #   rx_ampdu     accept the phone's Block Ack session (AWDL-15), where the
 #                hardware answers its A-MPDUs itself (default false)
 #   tx_noack     send unicast once, without waiting for the hardware's ACK
@@ -38,6 +52,25 @@
 #                peer visits a fixed radio's channel for a slot or two, and a
 #                frame retried past the visit holds up every frame behind it;
 #                Intel and MT76x2U TX status also stalls after channel changes
+#   tx_pace      hand the radio unicast only as fast as it sends at the data
+#                rate, and none it can't send before the peer leaves the
+#                channel, for drivers that queue whatever they're handed
+#                and send it whether the peer is there or not. The packets
+#                wait in Owly instead, where they make A-MSDUs (tx_amsdu in
+#                radio.toml) (default false)
+#   tx_purge     once the driver has no room for a frame, send nothing for
+#                560 ms. rtw88 keeps each injected frame until its firmware
+#                reports on it, which for some it never does, and frees
+#                those only when it has sent nothing for 500 ms, logging
+#                "failed to get tx report from firmware". Until then each
+#                report makes room for one more frame (default false)
+#   rtw88_retry_limit
+#                exclusive and active-monitor modes: how often the hardware
+#                sends a frame nobody ACKs, set for the session in the
+#                card's retry limit register through rtw88's debugfs. rtw88
+#                ignores tx_noack, and its 32 tries of a frame sent after
+#                the peer left hold up every frame behind it (default: the
+#                card's own)
 #   supports_tx_ldpc
 #                the driver can LDPC-encode injected frames, for owly-awdl's
 #                rate selection (not used yet)
@@ -139,10 +172,17 @@ notes = "Realtek RTL8822BE (Crosshair VII Hero, 10ec:b822, kernel 7.2.9). Shared
 [drivers.rtw88_8822bu]
 status = "tested"
 mode = "exclusive"
+cell_own_bssid = true
+cell_ht40 = true
+rx_ampdu = true
+tx_pace = true
+tx_purge = true
+rtw88_retry_limit = 4
 issues = [
     "In shared mode the phone never lists this computer, so nothing can be sent to it, though sending to the phone works and Wi-Fi stays up.",
+    "Without tx_rate in radio.toml this card sends to a phone at about 0.4 MB/s, and with it at that rate alone, without falling back, so a phone too far away for the rate may get nothing.",
 ]
-notes = "Realtek RTL8812BU (USB, TP-Link Archer T3U Plus, 2357:0138, kernel 7.3.0), as a second card beside a connected built-in one. Exclusive mode on channel 44, where the ad-hoc cell starts on 5 GHz: both directions, and Wi-Fi back after teardown. Shared mode on channel 44, with the generic entry's reconnect: AWDL syncs, the phone answers pings over awdl0 and takes a send, but never opens a connection to this computer, after a phone restart too. The kernel logs \"failed to get tx report from firmware\" when the radio is given back."
+notes = "Realtek RTL8812BU (USB, TP-Link Archer T3U Plus, 2357:0138, kernel 7.3.0), as a second card beside a connected built-in one. Exclusive mode on channel 44, where the ad-hoc cell starts on 5 GHz: both directions, and Wi-Fi back after teardown. Shared mode on channel 44, with the generic entry's reconnect: AWDL syncs, the phone answers pings over awdl0 and takes a send, but never opens a connection to this computer, after a phone restart too. The kernel logs \"failed to get tx report from firmware\" when the radio is given back, and with tx_purge each time the driver frees the frames it held. On kernel 7.2.11, with an iPhone 14 (iOS 26.5) connected to an access point on channel 40, which ran AWDL on 149 and 6 but not 44: the driver beacons the cell every 100 TU (a second card heard its beacons 102.4 ms apart, their interval field saying 10000). With the cell on AWDL's BSSID the phone ACKed this computer's TCP and pings but never answered them, and lost its own Wi-Fi 5 to 30 s after opening AirDrop; on a BSSID of its own, neither. A 40 MHz cell took the phone's upload from 0.45 to 1.8 MB/s (6 in 10 of its frames had come only as retries at MCS 0 and 1), and Block Ack to 3 MB/s. Without station entries the driver sent this computer's data at about 0.38 MB/s, 3.4 ms a frame; with tx_rate = \"mcs15\" and tx_amsdu, 3.7 MB/s to the phone and 5.4 MB/s from it, the phone heard at better than -50 dBm. At MCS 15 the firmware reports on about three frames in four."
 
 [drivers.rtw88_8821au]
 status = "broken"

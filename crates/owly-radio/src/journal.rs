@@ -55,6 +55,12 @@ pub enum Step {
     },
     /// The regulatory domain before the session asked for another.
     Regdom { alpha2: String },
+    /// rtw88's data rate fixed for the session, and its retry limit
+    /// register as it was before the session changed it.
+    Rtw88 {
+        dir: PathBuf,
+        retry_limit: Option<String>,
+    },
 }
 
 /// The journal, locked for as long as this value lives.
@@ -220,6 +226,12 @@ fn undo(ops: &dyn Ops, step: &Step, state: &mut Undo) -> Result<(), String> {
         } => {
             let _ = ops.write(&dir.join("runtime-pm"), runtime_pm);
             let _ = ops.write(&dir.join("deep-sleep"), deep_sleep);
+        }
+        Step::Rtw88 { dir, retry_limit } => {
+            let _ = ops.write(&dir.join("fix_rate"), crate::rtw88::FIX_RATE_OFF);
+            if let Some(was) = retry_limit {
+                crate::rtw88::set_retry_limit(ops, dir, was);
+            }
         }
         Step::Regdom { alpha2 } => {
             if let Err(e) = ops.set_regdom(alpha2) {

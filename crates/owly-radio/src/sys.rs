@@ -22,6 +22,11 @@ use crate::rtnl::Rtnl;
 /// every 10 s did.
 pub const IBSS_BEACON_TU: u32 = 10_000;
 
+/// The cell's BSSID where it can't have AWDL's (`cell_own_bssid` in the
+/// quirks table): locally administered, and the same on every computer, as
+/// AWDL's is.
+pub const IBSS_OWN_BSSID: MacAddr = MacAddr([0x02, 0x6f, 0x77, 0x6c, 0x79, 0x01]);
+
 pub trait Ops: Send + Sync {
     /// Network interfaces backed by a Wi-Fi card.
     fn wifi_interfaces(&self) -> Vec<String>;
@@ -56,13 +61,16 @@ pub trait Ops: Send + Sync {
     fn set_up(&self, iface: &str, up: bool) -> io::Result<()>;
     /// Tunes a monitor interface (HT20).
     fn set_freq(&self, iface: &str, freq: u32) -> io::Result<()>;
-    /// Joins AWDL's BSSID as an HT20 ad-hoc cell on a fixed channel.
-    fn join_ibss(&self, iface: &str, freq: u32) -> io::Result<()>;
+    /// Joins `bssid` as an ad-hoc cell on a fixed channel: HT20, or with
+    /// `ht40` HT40 with its second channel above.
+    fn join_ibss(&self, iface: &str, freq: u32, bssid: MacAddr, ht40: bool) -> io::Result<()>;
     fn leave_ibss(&self, iface: &str) -> io::Result<()>;
     /// Sets `/proc/sys/<key>`, with `key` in slashes.
     fn sysctl(&self, key: &str, value: &str) -> io::Result<()>;
     /// mt76's debugfs directory for this wiphy.
     fn mt76_dir(&self, phy: &str) -> PathBuf;
+    /// rtw88's debugfs directory for this wiphy.
+    fn rtw88_dir(&self, phy: &str) -> PathBuf;
     fn read(&self, path: &Path) -> Option<String>;
     fn write(&self, path: &Path, value: &str) -> io::Result<()>;
 
@@ -84,6 +92,17 @@ pub struct System;
 const NET: &str = "/sys/class/net";
 
 impl System {
+    /// A wiphy's debugfs directory, where its driver keeps its own.
+    fn debugfs(&self, phy: &str) -> PathBuf {
+        let debug = Path::new("/sys/kernel/debug");
+        if !debug.join("ieee80211").exists() {
+            // Needs CAP_SYS_ADMIN, which owlyd doesn't have: its unit has
+            // systemd mount debugfs instead. This is for running as root.
+            let _ = self.run("mount", &["-t", "debugfs", "none", "/sys/kernel/debug"]);
+        }
+        debug.join("ieee80211").join(phy)
+    }
+
     fn run(&self, program: &str, args: &[&str]) -> io::Result<()> {
         let out = Command::new(program)
             .args(args)
@@ -253,13 +272,14 @@ impl Ops for System {
         Nl80211::open()?.set_freq(self.ifindex(iface)?, freq)
     }
 
-    fn join_ibss(&self, iface: &str, freq: u32) -> io::Result<()> {
+    fn join_ibss(&self, iface: &str, freq: u32, bssid: MacAddr, ht40: bool) -> io::Result<()> {
         Nl80211::open()?.join_ibss(
             self.ifindex(iface)?,
             b"owly",
             freq,
-            owly_awdl::BSSID,
+            bssid,
             IBSS_BEACON_TU,
+            ht40,
         )
     }
 
@@ -272,13 +292,11 @@ impl Ops for System {
     }
 
     fn mt76_dir(&self, phy: &str) -> PathBuf {
-        let debug = Path::new("/sys/kernel/debug");
-        if !debug.join("ieee80211").exists() {
-            // Needs CAP_SYS_ADMIN, which owlyd doesn't have: its unit has
-            // systemd mount debugfs instead. This is for running as root.
-            let _ = self.run("mount", &["-t", "debugfs", "none", "/sys/kernel/debug"]);
-        }
-        debug.join("ieee80211").join(phy).join("mt76")
+        self.debugfs(phy).join("mt76")
+    }
+
+    fn rtw88_dir(&self, phy: &str) -> PathBuf {
+        self.debugfs(phy).join("rtw88")
     }
 
     fn read(&self, path: &Path) -> Option<String> {

@@ -17,8 +17,14 @@ use crate::journal::{Journal, Step};
 use crate::nl80211::{IfType, Kind};
 use crate::probe::{self, Station, social_channel};
 use crate::quirks::Mode;
+use crate::rtw88;
 use crate::rundir::Process;
-use crate::sys::Ops;
+use crate::sys::{IBSS_OWN_BSSID, Ops};
+
+/// How long the radio is handed nothing once it's full, where the quirks
+/// ask (`tx_purge`): a little longer than the 500 ms rtw88 takes to free
+/// the frames it holds.
+const TX_PURGE_US: u64 = 560_000;
 
 /// What a setup leaves for AWDL.
 pub(crate) struct Prepared {
@@ -184,6 +190,7 @@ impl Setup<'_> {
             self.monitor(Kind::Monitor { active: false }, sta_mac)?;
             freq
         };
+        self.rtw88()?;
         let channel = social_channel(freq).expect("a social channel");
         tracing::info!(
             station = %name, driver = %self.station.driver, channel,
@@ -222,6 +229,9 @@ impl Setup<'_> {
         if let Some(rate) = self.settings.tx_rate {
             awdl.rate = rate;
         }
+        if let Some(dbm) = self.settings.rssi_threshold {
+            awdl.rssi_threshold = Some(dbm);
+        }
         awdl.accept_addba = self
             .settings
             .aggregation
@@ -230,6 +240,10 @@ impl Setup<'_> {
             awdl.no_ack = no_ack;
         }
         awdl.amsdu = self.settings.tx_amsdu;
+        awdl.pace = self.station.quirk.tx_pace;
+        if self.station.quirk.tx_purge {
+            awdl.full_pause_us = TX_PURGE_US;
+        }
         Prepared {
             mode,
             awdl,
@@ -286,6 +300,40 @@ impl Setup<'_> {
         Ok(())
     }
 
+    /// On an rtw88 card the session has to itself: radio.toml's data rate,
+    /// which the driver takes no other way, and the retry limit the quirks
+    /// give (see [`crate::rtw88`]). After the interfaces are up, so that
+    /// teardown puts both back before they go.
+    fn rtw88(&mut self) -> Result<(), Error> {
+        let ops = self.ops;
+        let rate = self.settings.tx_rate.and_then(rtw88::rate_code);
+        let tries = self.station.quirk.rtw88_retry_limit;
+        if !self.station.driver.starts_with("rtw88") || (rate.is_none() && tries.is_none()) {
+            return Ok(());
+        }
+        let dir = ops.rtw88_dir(&self.station.phy);
+        if ops.read(&dir.join("fix_rate")).is_none() {
+            tracing::warn!(
+                "rtw88 has no debugfs in {}: its rate and retries stay the driver's own",
+                dir.display()
+            );
+            return Ok(());
+        }
+        // Not changed unless it can be put back.
+        let retry_limit = tries.and_then(|_| rtw88::retry_limit(ops, &dir));
+        self.record(Step::Rtw88 {
+            dir: dir.clone(),
+            retry_limit: retry_limit.clone(),
+        })?;
+        if let Some(code) = rate {
+            let _ = ops.write(&dir.join("fix_rate"), &code.to_string());
+        }
+        if let (Some(tries), Some(_)) = (tries, retry_limit) {
+            rtw88::set_retry_limit(ops, &dir, &rtw88::tries(tries));
+        }
+        Ok(())
+    }
+
     /// Asks for `country`'s regulatory domain and waits for the kernel to
     /// apply it, then reads the channels it allows. A driver that manages
     /// its own (Intel's LAR) ignores the request, so it isn't made.
@@ -330,8 +378,10 @@ impl Setup<'_> {
     /// AX201 never sees an ACK. The cell is HT, since an iPhone sends its
     /// unicast at HT rates, which a non-HT cell neither receives nor ACKs.
     /// Cards that refuse an ad-hoc interface beside the station, even down
-    /// (some AX211s), get the station itself made the cell. Returns the
-    /// frequency it started on.
+    /// (some AX211s), get the station itself made the cell. A driver that
+    /// beacons more often than the cell asks gets the cell on a BSSID of its
+    /// own, and one that's to hear 40 MHz frames a cell that wide where one
+    /// starts, as the quirks say. Returns the frequency it started on.
     fn ibss_cell(&mut self, mac: MacAddr, freqs: &[u32]) -> Result<u32, Error> {
         let ops = self.ops;
         let name = self.station.name.clone();
@@ -372,17 +422,31 @@ impl Setup<'_> {
         let _ = ops.sysctl(&format!("net/ipv6/conf/{cell}/disable_ipv6"), "1");
         ops.set_up(&cell, true)
             .map_err(|e| Error::no_radio(format!("Couldn't bring {cell} up: {e}")))?;
-        for &f in freqs {
-            if let Err(e) = ops.join_ibss(&cell, f) {
-                tracing::info!("no ad-hoc cell on {f} MHz: {e}");
-                continue;
+        let quirk = &self.station.quirk;
+        let bssid = if quirk.cell_own_bssid {
+            IBSS_OWN_BSSID
+        } else {
+            owly_awdl::BSSID
+        };
+        let start = |f: u32, ht40: bool| {
+            let width = if ht40 { 40 } else { 20 };
+            if let Err(e) = ops.join_ibss(&cell, f, bssid, ht40) {
+                tracing::info!("no {width} MHz ad-hoc cell on {f} MHz: {e}");
+                return false;
             }
             // mac80211 scans the channel once before it starts the cell.
             if self.wait(Duration::from_secs(10), || ops.link_freq(&cell) == Some(f)) {
+                return true;
+            }
+            tracing::info!("the {width} MHz ad-hoc cell on {f} MHz didn't start");
+            let _ = ops.leave_ibss(&cell);
+            false
+        };
+        for &f in freqs {
+            // 2.4 GHz has no room for the second channel.
+            if (quirk.cell_ht40 && f > 5000 && start(f, true)) || start(f, false) {
                 return Ok(f);
             }
-            tracing::info!("the ad-hoc cell on {f} MHz didn't start");
-            let _ = ops.leave_ibss(&cell);
         }
         Err(Error::no_radio(
             "Couldn't start AWDL's ad-hoc cell on any of AirDrop's channels.",

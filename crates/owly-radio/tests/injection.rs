@@ -49,6 +49,8 @@ struct FakeOps {
     regdom_from_ap: bool,
     /// The channels on which an ad-hoc cell starts.
     ibss_starts: Vec<u32>,
+    /// No 40 MHz cell starts.
+    ibss_no_ht40: bool,
     /// The card refuses an ad-hoc interface beside its station.
     ibss_refused: bool,
     fail_monitor: bool,
@@ -112,6 +114,7 @@ impl FakeOps {
             regdom: Mutex::new("DE".into()),
             regdom_from_ap: false,
             ibss_starts: vec![2437, 5220, 5745],
+            ibss_no_ht40: false,
             ibss_refused: false,
             fail_monitor: false,
             ufw: false,
@@ -287,8 +290,18 @@ impl Ops for FakeOps {
         i.freq = Some(freq);
         Ok(())
     }
-    fn join_ibss(&self, iface: &str, freq: u32) -> io::Result<()> {
-        self.call(format!("join {iface} {freq}"));
+    fn join_ibss(&self, iface: &str, freq: u32, bssid: MacAddr, ht40: bool) -> io::Result<()> {
+        // As it always was on AWDL's BSSID at 20 MHz; what differs is said.
+        let own = if bssid == owly_awdl::BSSID {
+            String::new()
+        } else {
+            format!(" bssid {bssid}")
+        };
+        let wide = if ht40 { " ht40" } else { "" };
+        self.call(format!("join {iface} {freq}{own}{wide}"));
+        if ht40 && self.ibss_no_ht40 {
+            return Err(io::Error::other("EINVAL"));
+        }
         let no_ir = self
             .wiphy
             .lock()
@@ -316,7 +329,20 @@ impl Ops for FakeOps {
     fn mt76_dir(&self, phy: &str) -> PathBuf {
         PathBuf::from(format!("/debug/{phy}/mt76"))
     }
+    fn rtw88_dir(&self, phy: &str) -> PathBuf {
+        PathBuf::from(format!("/debug/{phy}/rtw88"))
+    }
     fn read(&self, path: &Path) -> Option<String> {
+        // Only an rtw88 card has rtw88's directory, with the register that
+        // was last asked for in read_reg.
+        if path.starts_with("/debug/phy0/rtw88") {
+            let said = if path.ends_with("read_reg") {
+                "reg 0x42a: 0x2020"
+            } else {
+                "Fix rate disabled, fix_rate = 255"
+            };
+            return self.driver.starts_with("rtw88").then(|| said.into());
+        }
         if path.starts_with("/debug") {
             return Some("1".into());
         }
@@ -428,11 +454,24 @@ impl Fx {
             channels: None,
             aggregation: None,
             tx_rate: None,
+            rssi_threshold: None,
             tx_amsdu: false,
             hostapd: self.dir.path().join("hostapd"),
             quirks: Quirks::load(Path::new("/nonexistent")).unwrap(),
             run_dir: self.run(),
         }
+    }
+
+    /// The settings, with an entry of `quirks` for `driver` over the
+    /// packaged table: exclusive mode, on the default channels.
+    fn settings_with_quirks(&self, driver: &str, quirks: &str) -> Settings {
+        let overrides = self.dir.path().join("drivers.toml");
+        let entry =
+            format!("[drivers.{driver}]\nstatus = \"tested\"\nmode = \"exclusive\"\n{quirks}");
+        std::fs::write(&overrides, entry).unwrap();
+        let mut settings = self.settings();
+        settings.quirks = Quirks::load(&overrides).unwrap();
+        settings
     }
 
     fn run(&self) -> RunDir {
@@ -841,15 +880,146 @@ async fn exclusive_mode_tries_each_channel_in_order() {
         ]
     );
     assert_eq!(fx.awdl().radio.channel.0, 6);
+    assert_eq!(fx.awdl().rssi_threshold, Some(-65));
     backend.down().await.unwrap();
 
-    // radio.toml's order wins over the driver's.
+    // radio.toml's order wins over the driver's, and its threshold for
+    // peers over owly-awdl's.
     let fx = Fx::with(|o| o.driver = "rtw88_8822be".into());
     let mut settings = fx.settings();
     settings.channels = Some(vec![149]);
+    settings.rssi_threshold = Some(-50);
     let mut backend = fx.backend_with(settings);
     backend.up().await.unwrap();
     assert_eq!(fx.awdl().radio.channel.0, 149);
+    assert_eq!(fx.awdl().rssi_threshold, Some(-50));
+    backend.down().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_cell_is_as_the_drivers_quirks_say() {
+    let joins = |fx: &Fx| -> Vec<String> {
+        let calls = fx.ops.calls().into_iter();
+        calls.filter(|c| c.starts_with("join")).collect()
+    };
+    let quirks = "cell_own_bssid = true\ncell_ht40 = true\n";
+    let own = "02:6f:77:6c:79:01";
+
+    // Off AWDL's BSSID, and 40 MHz wide on 5 GHz.
+    let fx = Fx::with(intel);
+    let mut backend = fx.backend_with(fx.settings_with_quirks("iwlwifi", quirks));
+    backend.up().await.unwrap();
+    assert_eq!(joins(&fx), [format!("join {IBSS} 5220 bssid {own} ht40")]);
+    backend.down().await.unwrap();
+
+    // Where no 40 MHz cell starts, a 20 MHz one on the same channel, and
+    // always 20 MHz on 2.4 GHz.
+    let fx = Fx::with(|o| {
+        intel(o);
+        o.ibss_no_ht40 = true;
+    });
+    let mut backend = fx.backend_with(fx.settings_with_quirks("iwlwifi", quirks));
+    backend.up().await.unwrap();
+    assert_eq!(
+        joins(&fx),
+        [
+            format!("join {IBSS} 5220 bssid {own} ht40"),
+            format!("join {IBSS} 5220 bssid {own}"),
+        ]
+    );
+    backend.down().await.unwrap();
+    let fx = Fx::with(intel);
+    let mut settings = fx.settings_with_quirks("iwlwifi", quirks);
+    settings.channels = Some(vec![6]);
+    let mut backend = fx.backend_with(settings);
+    backend.up().await.unwrap();
+    assert_eq!(joins(&fx), [format!("join {IBSS} 2437 bssid {own}")]);
+    backend.down().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rtw88_gets_its_rate_and_retry_limit_through_debugfs() {
+    let rtw88 = |fx: &Fx| -> Vec<String> {
+        let calls = fx.ops.calls().into_iter();
+        calls.filter(|c| c.contains("/rtw88/")).collect()
+    };
+    let quirks = "tx_pace = true\ntx_purge = true\nrtw88_retry_limit = 4\n";
+    // The driver takes no rate from a frame and ignores "no ACK": once the
+    // interfaces are up, radio.toml's rate is fixed in fix_rate, and the
+    // retry limit the quirks give in its register.
+    let fx = Fx::with(|o| o.driver = "rtw88_8822bu".into());
+    let mut settings = fx.settings_with_quirks("rtw88_8822bu", quirks);
+    settings.tx_rate = TxRate::parse("mcs15");
+    let mut backend = fx.backend_with(settings);
+    backend.up().await.unwrap();
+    let calls = fx.ops.calls();
+    assert_eq!(
+        calls[calls.len() - 4..],
+        [
+            format!("up {MONITOR}"),
+            "write /debug/phy0/rtw88/read_reg 0x42a 2".into(),
+            "write /debug/phy0/rtw88/fix_rate 27".into(),
+            "write /debug/phy0/rtw88/write_reg 0x42a 0x0404 2".into(),
+        ]
+    );
+    assert_eq!(
+        fx.journal().unwrap().last(),
+        Some(&Step::Rtw88 {
+            dir: "/debug/phy0/rtw88".into(),
+            retry_limit: Some("0x2020".into()),
+        })
+    );
+    // Unicast is paced at that rate, and a full radio left alone to free
+    // what it holds.
+    let awdl = fx.awdl();
+    assert_eq!(
+        awdl.rate,
+        TxRate::Ht {
+            mcs: 15,
+            sgi: false
+        }
+    );
+    assert!(awdl.pace);
+    assert_eq!(awdl.full_pause_us, 560_000);
+    // Both are put back before the interfaces go.
+    backend.down().await.unwrap();
+    assert_eq!(
+        fx.since(calls.len())[..3],
+        [
+            "write /debug/phy0/rtw88/fix_rate 255".to_string(),
+            "write /debug/phy0/rtw88/write_reg 0x42a 0x2020 2".into(),
+            format!("down {MONITOR}"),
+        ]
+    );
+
+    // Without a rate in radio.toml the driver keeps its own, and without
+    // the quirk its retry limit.
+    let fx = Fx::with(|o| o.driver = "rtw88_8822bu".into());
+    let mut backend = fx.backend_with(fx.settings_with_quirks("rtw88_8822bu", quirks));
+    backend.up().await.unwrap();
+    assert_eq!(
+        rtw88(&fx),
+        [
+            "write /debug/phy0/rtw88/read_reg 0x42a 2",
+            "write /debug/phy0/rtw88/write_reg 0x42a 0x0404 2",
+        ]
+    );
+    backend.down().await.unwrap();
+    let fx = Fx::with(|o| o.driver = "rtw88_8822bu".into());
+    let mut backend = fx.backend_with(fx.settings_with_quirks("rtw88_8822bu", ""));
+    backend.up().await.unwrap();
+    assert_eq!(rtw88(&fx), Vec::<String>::new());
+    assert!(!fx.awdl().pace && fx.awdl().full_pause_us == 0);
+    backend.down().await.unwrap();
+
+    // Another driver's card has no such directory, and is asked frame by
+    // frame as ever.
+    let fx = Fx::with(intel);
+    let mut settings = fx.settings();
+    settings.tx_rate = TxRate::parse("mcs7");
+    let mut backend = fx.backend_with(settings);
+    backend.up().await.unwrap();
+    assert_eq!(rtw88(&fx), Vec::<String>::new());
     backend.down().await.unwrap();
 }
 

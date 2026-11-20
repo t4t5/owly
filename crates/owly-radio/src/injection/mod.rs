@@ -86,6 +86,8 @@ pub struct Settings {
     pub aggregation: Option<bool>,
     /// The data frame rate.
     pub tx_rate: Option<owly_awdl::TxRate>,
+    /// Peers heard more weakly, in dBm, aren't taken on.
+    pub rssi_threshold: Option<i8>,
     /// Unicast as A-MSDUs, where the peer takes them.
     pub tx_amsdu: bool,
     pub hostapd: PathBuf,
