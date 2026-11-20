@@ -164,6 +164,9 @@ impl Quirk {
         if self.channels.is_empty() {
             return Err("channels is empty".into());
         }
+        if self.ibss_rejoin_secs == Some(0) {
+            return Err("ibss_rejoin_secs must be greater than zero".into());
+        }
         Ok(())
     }
 }
@@ -245,6 +248,37 @@ mod tests {
         assert!(!q.reconnect_after_monitor);
         assert_eq!(q.channels, [44, 149, 6]);
         assert_eq!(q.notes, "");
+    }
+
+    #[test]
+    fn intel_8265_workarounds_are_opt_in_and_device_specific() {
+        let quirks = packaged();
+        let (q, source) = quirks.get("iwlwifi", Some("8086:24fd"));
+        assert_eq!(source, Source::Device);
+        assert_eq!(q.status, Status::Untested);
+        assert_eq!(q.mode, Mode::Exclusive);
+        assert_eq!(q.channels, [6]);
+        assert!(q.unicast_groups);
+        assert_eq!(q.ibss_rejoin_secs, Some(9));
+
+        for id in ["8086:51f0", "8086:24f3", "8086:095a"] {
+            let (q, _) = quirks.get("iwlwifi", Some(id));
+            assert!(!q.unicast_groups, "unexpected workaround for {id}");
+            assert_eq!(q.ibss_rejoin_secs, None);
+        }
+    }
+
+    #[test]
+    fn a_zero_ibss_rejoin_interval_is_rejected_before_starting_the_radio() {
+        let result = Quirks::parse(
+            r#"
+            [drivers.iwlwifi]
+            status = "untested"
+            mode = "exclusive"
+            ibss_rejoin_secs = 0
+            "#,
+        );
+        assert!(result.is_err(), "a zero interval panics the supervisor");
     }
 
     #[test]

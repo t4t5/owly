@@ -242,6 +242,38 @@ async fn unicast_groups_sends_group_frames_to_each_peer_instead() {
     b.running.stop();
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn unicast_groups_never_recurses_on_a_spoofed_multicast_peer() {
+    let (a_tx, mut from_a) = mpsc::unbounded_channel::<Received>();
+    let (to_a, a_rx) = mpsc::unbounded_channel();
+    let mut cfg = config(1);
+    cfg.unicast_groups = true;
+    let mut a = host_with(cfg, a_tx, a_rx);
+
+    // A valid advertisement with an invalid transmitter address can still
+    // reach the peer table. It must never become another group transmission.
+    let mut spoofed = config(2);
+    spoofed.addr = MacAddr::BROADCAST;
+    let mut sender = owly_awdl::Node::new(spoofed, owly_awdl::Time(1));
+    for action in sender.handle(owly_awdl::Input::Timer(owly_awdl::Time(1))) {
+        if let owly_awdl::Action::Transmit { frame, .. } = action {
+            to_a.send(Received {
+                bytes: frame.bytes,
+                rssi: Some(-40),
+            })
+            .unwrap();
+        }
+    }
+    tokio::time::timeout(Duration::from_secs(2), a.peers.wait_for(|p| !p.is_empty()))
+        .await
+        .expect("the spoofed peer was never processed")
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(from_a.try_recv().is_err(), "sent to a group address");
+    assert!(a.running.failed().borrow().is_none());
+    a.running.stop();
+}
+
 #[test]
 fn a_transport_that_cant_open_fails_the_spawn() {
     let (peers, _) = watch::channel(Vec::new());

@@ -274,7 +274,14 @@ impl<A: Air, N: Netif> Driver<A, N> {
         let cfg = self.node.config();
         if cfg.unicast_groups && frame.to.is_multicast() {
             let no_ack = cfg.no_ack;
-            let peers: Vec<MacAddr> = self.node.peers().map(|p| p.mac).collect();
+            // A peer address comes from the air. A group address would
+            // recurse into this branch and could never be a unicast copy.
+            let peers: Vec<MacAddr> = self
+                .node
+                .peers()
+                .map(|p| p.mac)
+                .filter(|mac| !mac.is_multicast())
+                .collect();
             for mac in peers {
                 let mut copy = frame.clone();
                 copy.bytes[4..10].copy_from_slice(&mac.0);
