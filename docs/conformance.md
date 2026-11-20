@@ -41,4 +41,5 @@ Tests MUST NOT assume an identifier normalization for the BLE and record hashes,
 | T-AWDL-1 | AWDL-3, AWDL-4, AWDL-5 | A parser fed captured iPhone PSFs and MIFs (including zero-padded ones) yields all TLVs without error. |
 | T-AWDL-2 | AWDL-13 | A built data frame for a given IPv6 packet matches the golden bytes. |
 | T-AWDL-3 | AWDL-7, AWDL-17 | Replaying a capture of a session (`tests/captures/`), a passive node finds the capture's peers valid, follows its master, and keeps within 3 TU of the master's schedule. |
+| T-AWDL-4 | MDNS-2 | Given a node whose host announces a receiver, its MIFs end with a Service Response TLV for each of the PTR, SRV and TXT records, every action frame's Service Parameters carry the SUI and the names' values, and the ARPA TLV names the SRV's target. Announced again, the SUI stays; withdrawn, or not announced for 15 s, the records go and the SUI changes. The TLVs match the golden bytes. |
 | T-INTEROP-1 | all | iPhone → Linux photo, Linux → iPhone photo, Linux → iPhone link, each in Everyone mode. |

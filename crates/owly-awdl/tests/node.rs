@@ -63,6 +63,8 @@ fn frame_from(
         sequence,
         election: &e,
         ht: Some(HtCapabilities::ONE_STREAM),
+        services: &[],
+        sui: 0,
     };
     frame::action_frame(mac, 1, kind, 0, |out| {
         tlv::put_all(out, &own, kind == subtype::MIF)
@@ -524,6 +526,138 @@ fn a_malformed_frame_changes_nothing() {
     feed(&mut n, START, &f);
     assert!(n.peer(PHONE).is_none());
     assert_eq!(n.stats().rx_malformed, 1);
+}
+
+/// The host's mDNS announcement of a receiver, or its goodbye (a TTL of 0):
+/// the service's PTR to the instance, and the instance's SRV and TXT.
+fn announcement(instance: &str, ttl: u32) -> Ipv6Packet {
+    let service = b"\x08_airdrop\x04_tcp\x05local\x00";
+    let mut name = vec![instance.len() as u8];
+    name.extend_from_slice(instance.as_bytes());
+    name.extend_from_slice(service);
+    let mut srv = vec![0, 0, 0, 0, 0x22, 0x43];
+    srv.extend_from_slice(b"\x04host\x05local\x00");
+    // A response with three answers.
+    let mut dns = vec![0, 0, 0x84, 0, 0, 0, 0, 3, 0, 0, 0, 0];
+    for (owner, kind, rdata) in [
+        (&service[..], 12, &name[..]),
+        (&name[..], 33, &srv[..]),
+        (&name[..], 16, &b"\x09flags=137"[..]),
+    ] {
+        dns.extend_from_slice(owner);
+        dns.extend_from_slice(&[0, kind, 0, 1]);
+        dns.extend_from_slice(&ttl.to_be_bytes());
+        dns.extend_from_slice(&(rdata.len() as u16).to_be_bytes());
+        dns.extend_from_slice(rdata);
+    }
+    // IPv6, then UDP to port 5353.
+    let mut data = vec![0x60, 0, 0, 0, 0, 0, 17, 255];
+    data.extend([0; 32]);
+    data.extend([0x14, 0xe9, 0x14, 0xe9, 0, 0, 0, 0]);
+    data.extend(dns);
+    Ipv6Packet {
+        dst: MacAddr([0x33, 0x33, 0, 0, 0, 0xfb]),
+        src: US,
+        data,
+    }
+}
+
+/// The node's next MIF and PSF from `t` on, as their TLVs.
+fn next_action_frames(n: &mut Node, t: Time) -> [Vec<(u8, Vec<u8>)>; 2] {
+    let mut found = [None, None];
+    let mut t = t;
+    while found.iter().any(Option::is_none) {
+        let a = tick(n, t);
+        for f in transmits(&a) {
+            if let Ok(frame::Received::Action { subtype, tlvs, .. }) = frame::parse(&f.bytes) {
+                let tlvs = tlv::tlvs(tlvs)
+                    .map(|t| t.unwrap())
+                    .map(|t| (t.kind, t.value.to_vec()))
+                    .collect();
+                found[usize::from(subtype == subtype::PSF)] = Some(tlvs);
+            }
+        }
+        t = t.plus(TU);
+    }
+    found.map(Option::unwrap)
+}
+
+// spec: MDNS-2, T-AWDL-4
+#[test]
+fn the_hosts_records_ride_in_action_frames_while_it_announces_them() {
+    let value = |tlvs: &[(u8, Vec<u8>)], kind: u8| -> Vec<Vec<u8>> {
+        let of_kind = tlvs.iter().filter(|(k, _)| *k == kind);
+        of_kind.map(|(_, v)| v.clone()).collect()
+    };
+    let mut n = node(149, Presence::Fixed);
+    let t = START.plus(1_000);
+
+    // Without a receiver: no records, Service Parameters all zero, and the
+    // host's own name.
+    let [mif, psf] = next_action_frames(&mut n, t);
+    assert_eq!(value(&mif, 2), Vec::<Vec<u8>>::new());
+    assert_eq!(value(&mif, 6), [vec![0; 9]]);
+    assert_eq!(value(&mif, 16), [b"\x03\x04owly\xc0\x0c".to_vec()]);
+    assert_eq!(value(&psf, 6), [vec![0; 9]]);
+
+    // The receiver announces itself: its three records at the end of each
+    // MIF, their names' values in every action frame, and the host the SRV
+    // names in the ARPA TLV.
+    let t = t.plus(1_000_000);
+    let hello = announcement("0123456789ab", 120);
+    n.handle(Input::Outbound {
+        now: t,
+        packet: hello.clone(),
+    })
+    .for_each(drop);
+    let [mif, psf] = next_action_frames(&mut n, t);
+    let kinds: Vec<u8> = mif.iter().map(|(k, _)| *k).collect();
+    assert_eq!(kinds, [4, 5, 18, 24, 6, 7, 16, 12, 21, 2, 2, 2]);
+    let records = value(&mif, 2);
+    assert!(records[0].ends_with(b"\x0c0123456789ab\xc0\x00"), "PTR");
+    assert!(records[1].ends_with(b"\x22\x43\x04host\xc0\x0c"), "SRV");
+    assert!(records[2].ends_with(b"\x09flags=137"), "TXT");
+    let params = value(&mif, 6).remove(0);
+    assert_eq!(params[3..5], [1, 0], "the SUI moved");
+    assert_eq!(params.len(), 11, "a mask and two values");
+    assert_eq!(value(&mif, 16), [b"\x03\x04host\xc0\x0c".to_vec()]);
+    assert_eq!(value(&psf, 2), Vec::<Vec<u8>>::new());
+    assert_eq!(value(&psf, 6), std::slice::from_ref(&params));
+
+    // Announced again, nothing changes.
+    let t = t.plus(3_000_000);
+    n.handle(Input::Outbound {
+        now: t,
+        packet: hello,
+    })
+    .for_each(drop);
+    let [mif, _] = next_action_frames(&mut n, t);
+    assert_eq!(value(&mif, 6), [params]);
+
+    // Withdrawn: gone at once.
+    let t = t.plus(3_000_000);
+    n.handle(Input::Outbound {
+        now: t,
+        packet: announcement("0123456789ab", 0),
+    })
+    .for_each(drop);
+    let [mif, _] = next_action_frames(&mut n, t);
+    assert_eq!(value(&mif, 2), Vec::<Vec<u8>>::new());
+    assert_eq!(value(&mif, 6), [vec![0, 0, 0, 2, 0, 0, 0, 0, 0]]);
+    assert_eq!(value(&mif, 16), [b"\x03\x04owly\xc0\x0c".to_vec()]);
+
+    // A receiver that stops announcing without a goodbye: its records run
+    // out.
+    n.handle(Input::Outbound {
+        now: t,
+        packet: announcement("ba9876543210", 120),
+    })
+    .for_each(drop);
+    let [mif, _] = next_action_frames(&mut n, t);
+    assert_eq!(value(&mif, 2).len(), 3);
+    let [mif, _] = next_action_frames(&mut n, t.plus(17_000_000));
+    assert_eq!(value(&mif, 2), Vec::<Vec<u8>>::new());
+    assert_eq!(value(&mif, 6), [vec![0, 0, 0, 4, 0, 0, 0, 0, 0]]);
 }
 
 // spec: AWDL-15

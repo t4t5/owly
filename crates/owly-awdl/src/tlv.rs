@@ -352,6 +352,10 @@ pub struct Own<'a> {
     pub sequence: &'a Sequence,
     pub election: &'a crate::election::Election,
     pub ht: Option<HtCapabilities>,
+    /// The DNS-SD records the node carries for its host (MDNS-2), and the
+    /// SUI, which changes when they do.
+    pub services: &'a [crate::service::Record],
+    pub sui: u16,
 }
 
 fn tlv(out: &mut Vec<u8>, kind: u8, value: impl FnOnce(&mut Vec<u8>)) {
@@ -430,13 +434,13 @@ pub fn put_election_v2(out: &mut Vec<u8>, own: &Own) {
     });
 }
 
-/// Service Parameters, all zero: a changed SUI makes peers flush their
-/// mDNS caches, and the TLV seems otherwise unused since AWDL 2.
-pub fn put_service_params(out: &mut Vec<u8>) {
+/// Service Parameters: the SUI, which makes peers flush their mDNS caches
+/// when it changes, and a value for each name the node carries records
+/// under (MDNS-2). All zero for a node that has carried none.
+pub fn put_service_params(out: &mut Vec<u8>, own: &Own) {
+    let values = own.services.iter().map(|r| crate::service::value(&r.name));
     tlv(out, kind::SERVICE_PARAMS, |v| {
-        v.extend_from_slice(&[0; 3]);
-        v.le16(0);
-        v.le32(0);
+        crate::service::put_params(v, own.sui, values)
     });
 }
 
@@ -489,13 +493,14 @@ pub fn put_version(out: &mut Vec<u8>, devclass: u8) {
 }
 
 /// A PSF's or MIF's TLVs, in legacy's order. Both carry the HT
-/// capabilities, as an iPhone's do; only MIFs carry the host name.
+/// capabilities, as an iPhone's do; only MIFs carry the host name, and the
+/// host's records after the rest, where an iPhone's are.
 pub fn put_all(out: &mut Vec<u8>, own: &Own, mif: bool) {
     put_sync_params(out, own);
     put_election_v1(out, own);
     put_channel_sequence(out, own);
     put_election_v2(out, own);
-    put_service_params(out);
+    put_service_params(out, own);
     if let Some(ht) = &own.ht {
         put_ht_capabilities(out, ht);
     }
@@ -504,6 +509,13 @@ pub fn put_all(out: &mut Vec<u8>, own: &Own, mif: bool) {
     }
     put_data_path_state(out, own);
     put_version(out, own.devclass);
+    if mif {
+        for record in own.services {
+            tlv(out, kind::SERVICE_RESPONSE, |v| {
+                crate::service::put_response(v, record)
+            });
+        }
+    }
 }
 
 #[cfg(test)]
@@ -533,6 +545,8 @@ mod tests {
             sequence: &seq,
             election: &e,
             ht: Some(HtCapabilities::ONE_STREAM),
+            services: &[],
+            sui: 0,
         };
         let mut out = Vec::new();
         put_all(&mut out, &own, mif);
