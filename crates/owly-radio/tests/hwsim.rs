@@ -20,11 +20,19 @@
 //! so.
 
 use std::io::{BufRead, BufReader};
+use std::net::SocketAddrV6;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use owly_airdrop::driver::mdns::Mdns;
+use owly_airdrop::driver::receiver::{Options, Receiver, ReceiverEvent};
+use owly_airdrop::driver::sender::{Payload, Sender};
+use owly_airdrop::driver::tls::Identity;
+use owly_airdrop::proto::mdns::{BrowseEvent, Burst, RECEIVER_FLAGS, Service};
+use owly_airdrop::proto::receiver::Config as ReceiverConfig;
+use owly_airdrop::proto::sender::{Config as SenderConfig, Outcome};
 use owly_radio::injection::{IBSS, Injection, MONITOR, Settings};
 use owly_radio::quirks::Quirks;
 use owly_radio::radio::{Backend, LinkState};
@@ -34,11 +42,16 @@ use owly_radio::sys::{Ops, System};
 const AP_NS: &str = "owlyhwsim-ap";
 const STA_NS: &str = "owlyhwsim-sta";
 const PEER_NS: &str = "owlyhwsim-peer";
+const AP: &str = "owlyap9";
 const STA: &str = "owlysta0";
 const PEER: &str = "owlypeer0";
 /// Which scenario a re-run of this test plays, inside a namespace.
 const INNER: &str = "OWLY_HWSIM_INNER";
 const TEST: &str = "modes_on_hwsim";
+const AIRDROP_INSTANCE: &str = "a1b2c3d4e5f6";
+const AIRDROP_RECEIVER_NAME: &str = "Hwsim Receiver";
+const AIRDROP_PAYLOAD: &[u8] = b"hello over simulated AWDL\n";
+const SOAK_SECS_ENV: &str = "OWLY_HWSIM_SOAK_SECS";
 
 fn sh(script: &str) -> bool {
     Command::new("sh")
@@ -94,9 +107,9 @@ fn modes_on_hwsim() {
         if hostapd {
             let ap = sh(&format!(
                 r#"ip netns exec {AP_NS} sh -ec '
-                    printf "%s\n" interface=owlyap9 driver=nl80211 ssid=owly-hwsim hw_mode=g channel=6 > {d}/hostapd.conf
+                    printf "%s\n" interface={AP} driver=nl80211 ssid=owly-hwsim hw_mode=g channel=6 > {d}/hostapd.conf
                     hostapd -B -P {d}/hostapd.pid {d}/hostapd.conf > {d}/hostapd.log
-                    ip addr add 10.99.0.1/24 dev owlyap9
+                    ip addr add 10.99.0.1/24 dev {AP}
                 '"#
             ));
             assert!(ap, "starting the AP failed");
@@ -105,6 +118,12 @@ fn modes_on_hwsim() {
         }
         if hostapd {
             results.push(("shared", run_in(STA_NS, "shared")));
+            // Tear down the AP so AP_NS can join multi-radio AWDL tests later.
+            let _ = sh(&format!(
+                "kill $(cat {d}/hostapd.pid 2>/dev/null) 2>/dev/null || true
+                 sleep 0.3
+                 ip netns exec {AP_NS} sh -ec 'ip addr flush dev {AP} || true; ip link set {AP} down || true; iw dev {AP} set type managed || true'"
+            ));
         }
         results.push(("exclusive", run_in(STA_NS, "exclusive")));
         results.push(("active-monitor", run_in(STA_NS, "active-monitor")));
@@ -117,6 +136,28 @@ fn modes_on_hwsim() {
         let b = spawn_in(PEER_NS, "pair-active");
         results.push(("active-monitor pair, station", wait(a)));
         results.push(("active-monitor pair, peer", wait(b)));
+        // Full AirDrop (mDNS + TLS /Discover + /Ask + /Upload) over AWDL.
+        let rx = spawn_in(PEER_NS, "airdrop-receiver");
+        let tx = spawn_in(STA_NS, "airdrop-sender");
+        results.push(("airdrop, sender", wait(tx)));
+        results.push(("airdrop, receiver", wait(rx)));
+        // Three-radio multi-peer AWDL convergence.
+        let n1 = spawn_in(STA_NS, "triple");
+        let n2 = spawn_in(PEER_NS, "triple");
+        let n3 = spawn_in(AP_NS, "triple");
+        results.push(("triple, station", wait(n1)));
+        results.push(("triple, peer", wait(n2)));
+        results.push(("triple, third", wait(n3)));
+        if std::env::var(SOAK_SECS_ENV)
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .is_some_and(|s| s > 0)
+        {
+            let a = spawn_in(STA_NS, "soak");
+            let b = spawn_in(PEER_NS, "soak");
+            results.push(("soak, station", wait(a)));
+            results.push(("soak, peer", wait(b)));
+        }
     }
     sh(&format!(
         "kill $(cat {d}/hostapd.pid 2>/dev/null) 2>/dev/null || true
@@ -219,7 +260,13 @@ fn settings(station: &str, mode: &str, run: &Path) -> Settings {
 /// In a namespace: one scenario.
 fn inner(scenario: &str) {
     let ops = System;
-    let station = if ops.exists(STA) { STA } else { PEER };
+    let station = if ops.exists(STA) {
+        STA
+    } else if ops.exists(PEER) {
+        PEER
+    } else {
+        AP
+    };
     let run = tempfile::tempdir().unwrap();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let played = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match scenario {
@@ -228,6 +275,10 @@ fn inner(scenario: &str) {
         "active-monitor" => active_monitor(&ops, station, run.path(), &rt),
         "pair" => pair(station, "exclusive", run.path(), &rt),
         "pair-active" => pair(station, "active-monitor", run.path(), &rt),
+        "airdrop-receiver" => airdrop_receiver(station, run.path(), &rt),
+        "airdrop-sender" => airdrop_sender(station, run.path(), &rt),
+        "triple" => triple(station, run.path(), &rt),
+        "soak" => soak(station, run.path(), &rt),
         _ => panic!("no scenario {scenario}"),
     }));
     if let Err(panic) = played {
@@ -382,5 +433,224 @@ fn pair(sta: &str, mode: &str, run: &Path, rt: &tokio::runtime::Runtime) {
             Some(false),
             "{sta} couldn't ping its peer over AWDL"
         );
+    });
+}
+
+/// Receives one AirDrop file over mDNS + TLS on simulated AWDL (`awdl0`).
+fn airdrop_receiver(sta: &str, run: &Path, rt: &tokio::runtime::Runtime) {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let dest = tempfile::tempdir().unwrap();
+    let mut backend = Injection::new(Arc::new(System), settings(sta, "exclusive", run));
+    rt.block_on(async {
+        let link = backend.up().await.unwrap();
+        let identity = Identity::generate().unwrap();
+        let options = Options::new(
+            ReceiverConfig::new(AIRDROP_RECEIVER_NAME),
+            dest.path().to_path_buf(),
+        );
+        let addr = SocketAddrV6::new(link.addr, 0, 0, link.index);
+        let (receiver, mut events) = Receiver::bind(addr, &identity, options).await.unwrap();
+        let port = receiver.local_addr().unwrap().port();
+        tokio::spawn(receiver.run());
+
+        let burst = link.announce.map(|a| Burst {
+            count: a.count,
+            interval: a.interval,
+            pause: a.pause,
+        });
+        let reg = Mdns::new(link.index)
+            .with_burst(burst)
+            .register(Service {
+                instance: AIRDROP_INSTANCE.into(),
+                host: "hwsim-rx".into(),
+                port,
+                addr: link.addr,
+                flags: RECEIVER_FLAGS,
+            })
+            .await
+            .unwrap();
+
+        let received = tokio::time::timeout(Duration::from_secs(60), async {
+            loop {
+                match events.recv().await {
+                    Some(ReceiverEvent::Request(req)) => req.accept(),
+                    Some(ReceiverEvent::Received { paths, .. }) => {
+                        assert_eq!(paths.len(), 1);
+                        assert_eq!(std::fs::read(&paths[0]).unwrap(), AIRDROP_PAYLOAD);
+                        break;
+                    }
+                    Some(ReceiverEvent::Failed { reason, .. }) => {
+                        panic!("{sta} AirDrop receiver failed: {reason}");
+                    }
+                    Some(
+                        ReceiverEvent::Discovered { .. }
+                        | ReceiverEvent::Withdrawn { .. }
+                        | ReceiverEvent::Urls { .. },
+                    ) => {}
+                    None => panic!("{sta} AirDrop receiver event channel closed"),
+                }
+            }
+        })
+        .await;
+
+        // Keep the socket alive briefly so the sender reads the final HTTP 200.
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        drop(reg);
+        drop(events);
+        backend.down().await.unwrap();
+        received.expect("timed out waiting for AirDrop upload over hwsim");
+    });
+}
+
+/// Discovers the AirDrop receiver over mDNS on `awdl0`, `/Discover`s it, and uploads a file.
+fn airdrop_sender(sta: &str, run: &Path, rt: &tokio::runtime::Runtime) {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let src = tempfile::tempdir().unwrap();
+    let file_path = src.path().join("hello.txt");
+    std::fs::write(&file_path, AIRDROP_PAYLOAD).unwrap();
+
+    let mut backend = Injection::new(Arc::new(System), settings(sta, "exclusive", run));
+    rt.block_on(async {
+        let link = backend.up().await.unwrap();
+        let mut peers = link.peers.clone();
+        let heard = tokio::time::timeout(Duration::from_secs(30), peers.wait_for(|p| !p.is_empty()))
+            .await
+            .is_ok_and(|r| r.is_ok());
+
+        let svc = if heard {
+            let mut browse = Mdns::new(link.index).browse().await.unwrap();
+            let found = tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    match browse.events.recv().await {
+                        Some(BrowseEvent::Found(svc)) if svc.instance == AIRDROP_INSTANCE => {
+                            return Some(svc);
+                        }
+                        Some(_) => {}
+                        None => return None,
+                    }
+                }
+            })
+            .await
+            .ok()
+            .flatten();
+            drop(browse);
+            found
+        } else {
+            None
+        };
+
+        let result = match svc {
+            Some(svc) => {
+                let target = SocketAddrV6::new(svc.addr, svc.port, 0, link.index);
+                let sender =
+                    Sender::new(SenderConfig::new("Hwsim Sender", "f6e5d4c3b2a1")).unwrap();
+                let disc = sender.discover(target).await.unwrap();
+                let outcome = sender
+                    .send(target, &Payload::Files(vec![file_path]), svc.flags, None)
+                    .await
+                    .unwrap();
+                Ok((disc, outcome))
+            }
+            None => Err(heard),
+        };
+
+        backend.down().await.unwrap();
+        let (disc, outcome) = result.unwrap_or_else(|saw_peer| {
+            if !saw_peer {
+                panic!("{sta} heard no AWDL peer in 30 s");
+            }
+            panic!("{sta} never found mDNS AirDrop service {AIRDROP_INSTANCE} in 30 s");
+        });
+        let disc = disc.expect("AirDrop /Discover returned None");
+        assert_eq!(disc.computer_name, AIRDROP_RECEIVER_NAME);
+        assert_eq!(outcome, Outcome::Delivered);
+    });
+}
+
+/// Three AWDL nodes simultaneously: each discovers both peers and pings both over `awdl0`.
+fn triple(sta: &str, run: &Path, rt: &tokio::runtime::Runtime) {
+    let mut backend = Injection::new(Arc::new(System), settings(sta, "exclusive", run));
+    rt.block_on(async {
+        let link = backend.up().await.unwrap();
+        let mut peers = link.peers.clone();
+        let found =
+            tokio::time::timeout(Duration::from_secs(30), peers.wait_for(|p| p.len() >= 2))
+                .await
+                .ok()
+                .and_then(|r| {
+                    r.ok()
+                        .map(|list| list.iter().map(|info| info.mac).collect::<Vec<_>>())
+                });
+        let mut pings = Vec::new();
+        if let Some(macs) = &found {
+            for &mac in macs {
+                let peer = mac.link_local();
+                let ping = format!("ping -6 -c 5 -i 0.3 -W 3 {peer}%awdl0");
+                let ok = tokio::task::spawn_blocking(move || sh(&ping))
+                    .await
+                    .unwrap();
+                pings.push((mac, ok));
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        backend.down().await.unwrap();
+        let macs = found.unwrap_or_else(|| panic!("{sta} heard fewer than 2 AWDL peers in 30 s"));
+        assert!(macs.len() >= 2, "{sta} expected 2+ peers, got {macs:?}");
+        for (mac, ok) in pings {
+            assert!(ok, "{sta} couldn't ping peer {mac} over 3-node AWDL");
+        }
+    });
+}
+
+/// Opt-in sustained stability soak (`OWLY_HWSIM_SOAK_SECS`): verifies link and peer retention.
+fn soak(sta: &str, run: &Path, rt: &tokio::runtime::Runtime) {
+    let secs = std::env::var(SOAK_SECS_ENV)
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(60);
+    let mut backend = Injection::new(Arc::new(System), settings(sta, "exclusive", run));
+    rt.block_on(async {
+        let link = backend.up().await.unwrap();
+        let mut peers = link.peers.clone();
+        let heard = tokio::time::timeout(Duration::from_secs(30), peers.wait_for(|p| !p.is_empty()))
+            .await
+            .is_ok_and(|r| r.is_ok());
+        let mut failure: Option<String> = if heard {
+            None
+        } else {
+            Some(format!("{sta} heard no AWDL peer in 30 s"))
+        };
+        if failure.is_none() {
+            let start = Instant::now();
+            let mut last_ping = Instant::now() - Duration::from_secs(10);
+            while start.elapsed() < Duration::from_secs(secs) {
+                if *link.state.borrow() != LinkState::Up {
+                    failure = Some(format!("{sta} AWDL link left Up state during soak"));
+                    break;
+                }
+                let peer = link.peers.borrow().first().map(|p| p.mac);
+                let Some(mac) = peer else {
+                    failure = Some(format!("{sta} lost its AWDL peer during soak"));
+                    break;
+                };
+                if last_ping.elapsed() >= Duration::from_secs(10) {
+                    let addr = mac.link_local();
+                    let ping = format!("ping -6 -c 3 -i 0.3 -W 3 {addr}%awdl0");
+                    let ok = tokio::task::spawn_blocking(move || sh(&ping))
+                        .await
+                        .unwrap();
+                    if !ok {
+                        failure = Some(format!("{sta} ping to {mac} failed during soak"));
+                        break;
+                    }
+                    last_ping = Instant::now();
+                }
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        }
+        backend.down().await.unwrap();
+        if let Some(msg) = failure {
+            panic!("{msg}");
+        }
     });
 }
