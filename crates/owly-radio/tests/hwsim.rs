@@ -148,6 +148,15 @@ fn modes_on_hwsim() {
         results.push(("triple, station", wait(n1)));
         results.push(("triple, peer", wait(n2)));
         results.push(("triple, third", wait(n3)));
+        // IPv6 all-nodes multicast (ff02::1%awdl0), native multicast and unicast_groups workaround.
+        let a = spawn_in(STA_NS, "multicast");
+        let b = spawn_in(PEER_NS, "multicast");
+        results.push(("multicast, station", wait(a)));
+        results.push(("multicast, peer", wait(b)));
+        let a = spawn_in(STA_NS, "multicast-unicast-groups");
+        let b = spawn_in(PEER_NS, "multicast-unicast-groups");
+        results.push(("multicast-unicast-groups, station", wait(a)));
+        results.push(("multicast-unicast-groups, peer", wait(b)));
         if std::env::var(SOAK_SECS_ENV)
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
@@ -229,12 +238,22 @@ fn wait_for(what: &str, limit: Duration, mut done: impl FnMut() -> bool) {
 
 /// The settings for this namespace's radio in one mode.
 fn settings(station: &str, mode: &str, run: &Path) -> Settings {
+    settings_with_unicast_groups(station, mode, run, false)
+}
+
+fn settings_with_unicast_groups(
+    station: &str,
+    mode: &str,
+    run: &Path,
+    unicast_groups: bool,
+) -> Settings {
     let quirks = Quirks::parse(&format!(
         r#"
         [drivers.mac80211_hwsim]
         status = "tested"
         mode = "{mode}"
         channels = [6]
+        unicast_groups = {unicast_groups}
         [drivers."*"]
         status = "untested"
         mode = "shared"
@@ -278,6 +297,8 @@ fn inner(scenario: &str) {
         "airdrop-receiver" => airdrop_receiver(station, run.path(), &rt),
         "airdrop-sender" => airdrop_sender(station, run.path(), &rt),
         "triple" => triple(station, run.path(), &rt),
+        "multicast" => multicast(station, false, run.path(), &rt),
+        "multicast-unicast-groups" => multicast(station, true, run.path(), &rt),
         "soak" => soak(station, run.path(), &rt),
         _ => panic!("no scenario {scenario}"),
     }));
@@ -513,9 +534,10 @@ fn airdrop_sender(sta: &str, run: &Path, rt: &tokio::runtime::Runtime) {
     rt.block_on(async {
         let link = backend.up().await.unwrap();
         let mut peers = link.peers.clone();
-        let heard = tokio::time::timeout(Duration::from_secs(30), peers.wait_for(|p| !p.is_empty()))
-            .await
-            .is_ok_and(|r| r.is_ok());
+        let heard =
+            tokio::time::timeout(Duration::from_secs(30), peers.wait_for(|p| !p.is_empty()))
+                .await
+                .is_ok_and(|r| r.is_ok());
 
         let svc = if heard {
             let mut browse = Mdns::new(link.index).browse().await.unwrap();
@@ -573,14 +595,13 @@ fn triple(sta: &str, run: &Path, rt: &tokio::runtime::Runtime) {
     rt.block_on(async {
         let link = backend.up().await.unwrap();
         let mut peers = link.peers.clone();
-        let found =
-            tokio::time::timeout(Duration::from_secs(30), peers.wait_for(|p| p.len() >= 2))
-                .await
-                .ok()
-                .and_then(|r| {
-                    r.ok()
-                        .map(|list| list.iter().map(|info| info.mac).collect::<Vec<_>>())
-                });
+        let found = tokio::time::timeout(Duration::from_secs(30), peers.wait_for(|p| p.len() >= 2))
+            .await
+            .ok()
+            .and_then(|r| {
+                r.ok()
+                    .map(|list| list.iter().map(|info| info.mac).collect::<Vec<_>>())
+            });
         let mut pings = Vec::new();
         if let Some(macs) = &found {
             for &mac in macs {
@@ -612,9 +633,10 @@ fn soak(sta: &str, run: &Path, rt: &tokio::runtime::Runtime) {
     rt.block_on(async {
         let link = backend.up().await.unwrap();
         let mut peers = link.peers.clone();
-        let heard = tokio::time::timeout(Duration::from_secs(30), peers.wait_for(|p| !p.is_empty()))
-            .await
-            .is_ok_and(|r| r.is_ok());
+        let heard =
+            tokio::time::timeout(Duration::from_secs(30), peers.wait_for(|p| !p.is_empty()))
+                .await
+                .is_ok_and(|r| r.is_ok());
         let mut failure: Option<String> = if heard {
             None
         } else {
@@ -651,6 +673,55 @@ fn soak(sta: &str, run: &Path, rt: &tokio::runtime::Runtime) {
         backend.down().await.unwrap();
         if let Some(msg) = failure {
             panic!("{msg}");
+        }
+    });
+}
+
+/// Verifies IPv6 all-nodes multicast (`ff02::1%awdl0`) delivery over simulated air,
+/// both natively (`unicast_groups = false`) and via per-peer unicast fanout
+/// (`unicast_groups = true`), asserting a reply from the remote peer's link-local IP.
+fn multicast(sta: &str, unicast_groups: bool, run: &Path, rt: &tokio::runtime::Runtime) {
+    let mut backend = Injection::new(
+        Arc::new(System),
+        settings_with_unicast_groups(sta, "exclusive", run, unicast_groups),
+    );
+    rt.block_on(async {
+        let link = backend.up().await.unwrap();
+        let mut peers = link.peers.clone();
+        let heard =
+            tokio::time::timeout(Duration::from_secs(30), peers.wait_for(|p| !p.is_empty()))
+                .await
+                .ok()
+                .and_then(|r| r.ok().map(|p| p[0].mac));
+        let reply = match heard {
+            Some(mac) => {
+                let peer_ip = mac.link_local().to_string();
+                let out = tokio::task::spawn_blocking(move || {
+                    Command::new("ping")
+                        .args(["-6", "-c", "5", "-i", "0.3", "-W", "3", "ff02::1%awdl0"])
+                        .output()
+                })
+                .await
+                .unwrap();
+                match out {
+                    Ok(o) => {
+                        let stdout = String::from_utf8_lossy(&o.stdout).into_owned();
+                        let saw_peer = stdout.contains(&peer_ip);
+                        Ok((saw_peer, peer_ip, stdout))
+                    }
+                    Err(e) => Err(format!("spawning ping failed: {e}")),
+                }
+            }
+            None => Err(format!("{sta} heard no AWDL peer in 30 s")),
+        };
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        backend.down().await.unwrap();
+        match reply {
+            Ok((true, _, _)) => {}
+            Ok((false, peer_ip, stdout)) => panic!(
+                "{sta} (unicast_groups={unicast_groups}) saw no multicast echo reply from {peer_ip}:\n{stdout}"
+            ),
+            Err(msg) => panic!("{msg}"),
         }
     });
 }
