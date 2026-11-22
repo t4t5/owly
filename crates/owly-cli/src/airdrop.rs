@@ -30,6 +30,7 @@ use owlyd::api::{self, LinkInfo, RadioProxy};
 use tokio::io::AsyncBufReadExt;
 
 use crate::bluez::{BluezAdvertiser, Registration};
+use crate::notify::{Notifier, sanitize_text};
 
 /// Apple's receivers listen here (MDNS-1), and an AWDL peer with no mDNS
 /// is tried here (DISC-5).
@@ -64,6 +65,9 @@ pub struct ReceiveArgs {
     /// Accept every request without asking (ASK-3).
     #[arg(long)]
     accept: bool,
+    /// Send desktop notifications (with Accept/Decline actions) over D-Bus.
+    #[arg(long)]
+    notify: bool,
     /// Don't announce over mDNS, for when another responder does.
     #[arg(long)]
     no_mdns: bool,
@@ -647,10 +651,22 @@ async fn run_receiver(
         dir,
         port,
         accept,
+        notify,
         no_mdns,
         flags,
         ..
     } = args;
+    let notifier = if notify {
+        match Notifier::connect().await {
+            Ok(n) => Some(n),
+            Err(e) => {
+                eprintln!("not sending desktop notifications: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
     let state = std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))
@@ -724,28 +740,126 @@ async fn run_receiver(
                     request.accept();
                     continue;
                 }
+                let mut prompt = match &notifier {
+                    Some(n) => match n
+                        .prompt_request(
+                            &request.ask.sender_computer_name,
+                            &request.ask.sender_model_name,
+                            &request.ask.offer,
+                            Duration::from_secs(15),
+                        )
+                        .await
+                    {
+                        Ok(p) => Some(p),
+                        Err(e) => {
+                            eprintln!("notification prompt failed: {e}");
+                            None
+                        }
+                    },
+                    None => None,
+                };
                 eprint!("accept? [y/N] ");
                 // ASK-2: the receiver declines by itself after 15 s.
-                let answer = tokio::time::timeout(Duration::from_secs(15), stdin.next_line()).await;
-                match answer {
-                    Ok(Ok(Some(line))) if line.trim().eq_ignore_ascii_case("y") => request.accept(),
-                    Ok(_) => request.decline(),
-                    Err(_) => eprintln!("\ntimed out"),
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+                let mut stdin_open = true;
+                enum PromptOutcome {
+                    Stdin(bool),
+                    Notify(bool),
+                    TimedOut,
+                }
+                let outcome = loop {
+                    tokio::select! {
+                        () = tokio::time::sleep_until(deadline) => break PromptOutcome::TimedOut,
+                        line = stdin.next_line(), if stdin_open => {
+                            match line {
+                                Ok(Some(line)) => {
+                                    break PromptOutcome::Stdin(line.trim().eq_ignore_ascii_case("y"));
+                                }
+                                Ok(None) if prompt.is_some() => stdin_open = false,
+                                Ok(None) | Err(_) => break PromptOutcome::Stdin(false),
+                            }
+                        }
+                        decision = async {
+                            match prompt.as_mut() {
+                                Some(p) => p.wait().await,
+                                None => std::future::pending().await,
+                            }
+                        }, if prompt.is_some() => {
+                            match decision {
+                                Some(yes) => break PromptOutcome::Notify(yes),
+                                None => prompt = None,
+                            }
+                        }
+                    }
+                };
+                match outcome {
+                    PromptOutcome::Stdin(true) => {
+                        request.accept();
+                        if let Some(p) = prompt {
+                            p.close().await;
+                        }
+                    }
+                    PromptOutcome::Stdin(false) => {
+                        request.decline();
+                        if let Some(p) = prompt {
+                            p.close().await;
+                        }
+                    }
+                    PromptOutcome::Notify(true) => {
+                        eprintln!("accepted (notification)");
+                        request.accept();
+                        if let Some(p) = prompt {
+                            p.close().await;
+                        }
+                    }
+                    PromptOutcome::Notify(false) => {
+                        eprintln!("declined (notification)");
+                        request.decline();
+                        if let Some(p) = prompt {
+                            p.close().await;
+                        }
+                    }
+                    PromptOutcome::TimedOut => {
+                        eprintln!("\ntimed out");
+                        if let Some(p) = prompt {
+                            p.close().await;
+                        }
+                    }
                 }
             }
             ReceiverEvent::Withdrawn { .. } => eprintln!("the request was withdrawn"),
             // SEC-4: shown, never opened.
             ReceiverEvent::Urls { urls, .. } => {
-                for u in urls {
+                for u in &urls {
                     println!("{u:?}");
+                }
+                if let Some(n) = &notifier {
+                    let first = urls.first().map_or("", String::as_str);
+                    n.notify_info("AirDrop link received", first, Duration::from_secs(5))
+                        .await;
                 }
             }
             ReceiverEvent::Received { paths, .. } => {
-                for p in paths {
+                for p in &paths {
                     println!("{}", p.display());
                 }
+                if let Some(n) = &notifier {
+                    let body = crate::notify::format_received_summary(&paths);
+                    n.notify_info("AirDrop received", &body, Duration::from_secs(5))
+                        .await;
+                }
             }
-            ReceiverEvent::Failed { reason, .. } => eprintln!("transfer failed: {reason}"),
+            ReceiverEvent::Failed { reason, .. } => {
+                eprintln!("transfer failed: {reason}");
+                if let Some(n) = &notifier {
+                    n.notify_info(
+                        "AirDrop failed",
+                        &sanitize_text(&reason, 200),
+                        Duration::from_secs(5),
+                    )
+                    .await;
+                }
+            }
         }
     }
 }

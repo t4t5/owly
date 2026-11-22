@@ -19,6 +19,7 @@ mod airdrop;
 mod bluez;
 mod capture;
 mod doctor;
+mod notify;
 mod radio;
 mod test_card;
 mod wifi;
