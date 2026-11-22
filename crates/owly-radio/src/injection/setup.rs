@@ -28,6 +28,9 @@ pub(crate) struct Prepared {
     pub announce: Announce,
     /// The hidden AP's hostapd, when the mode runs one.
     pub hostapd: Option<Child>,
+    /// The ad-hoc cell, its frequency and how often to rejoin it, when the
+    /// driver's `ibss_rejoin_secs` asks for that.
+    pub rejoin: Option<(String, u32, Duration)>,
 }
 
 /// Sets the radio up in the station's mode. Undoes what it did if a step
@@ -171,11 +174,18 @@ impl Setup<'_> {
         }
 
         let mut hostapd = None;
+        let mut rejoin = None;
         let freq = if mode == Mode::ActiveMonitor {
             self.active_monitor(sta_mac, &freqs)?
         } else {
             let freq = if self.station.has(IfType::Adhoc) {
-                self.ibss_cell(sta_mac, &freqs)?
+                let (cell, freq) = self.ibss_cell(sta_mac, &freqs)?;
+                rejoin = self
+                    .station
+                    .quirk
+                    .ibss_rejoin_secs
+                    .map(|s| (cell, freq, Duration::from_secs(s)));
+                freq
             } else {
                 let (freq, child) = self.ap_cell(sta_mac, &freqs)?;
                 hostapd = Some(child);
@@ -196,7 +206,9 @@ impl Setup<'_> {
             channel: Channel(channel),
             presence: Presence::Fixed,
         };
-        Ok(self.finish(mode, radio, sta_mac, Announce::FIXED, hostapd))
+        let mut prepared = self.finish(mode, radio, sta_mac, Announce::FIXED, hostapd);
+        prepared.rejoin = rejoin;
+        Ok(prepared)
     }
 
     /// AWDL on `radio`, on the station's MAC (AWDL-2), named after the
@@ -230,11 +242,13 @@ impl Setup<'_> {
             awdl.no_ack = no_ack;
         }
         awdl.amsdu = self.settings.tx_amsdu;
+        awdl.unicast_groups = self.station.quirk.unicast_groups;
         Prepared {
             mode,
             awdl,
             announce,
             hostapd,
+            rejoin: None,
         }
     }
 
@@ -332,7 +346,7 @@ impl Setup<'_> {
     /// Cards that refuse an ad-hoc interface beside the station, even down
     /// (some AX211s), get the station itself made the cell. Returns the
     /// frequency it started on.
-    fn ibss_cell(&mut self, mac: MacAddr, freqs: &[u32]) -> Result<u32, Error> {
+    fn ibss_cell(&mut self, mac: MacAddr, freqs: &[u32]) -> Result<(String, u32), Error> {
         let ops = self.ops;
         let name = self.station.name.clone();
         if ops.exists(IBSS) {
@@ -379,7 +393,7 @@ impl Setup<'_> {
             }
             // mac80211 scans the channel once before it starts the cell.
             if self.wait(Duration::from_secs(10), || ops.link_freq(&cell) == Some(f)) {
-                return Ok(f);
+                return Ok((cell, f));
             }
             tracing::info!("the ad-hoc cell on {f} MHz didn't start");
             let _ = ops.leave_ibss(&cell);

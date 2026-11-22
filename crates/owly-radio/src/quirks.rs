@@ -44,6 +44,14 @@ pub struct Quirk {
     /// selection, which doesn't use it yet.
     #[serde(default)]
     pub supports_tx_ldpc: bool,
+    /// Send broadcast and multicast as unicast to each peer: the firmware
+    /// never sends group frames from the ad-hoc cell.
+    #[serde(default)]
+    pub unicast_groups: bool,
+    /// Leave and rejoin the ad-hoc cell this often, in seconds: the
+    /// firmware stops sending to its stations from the cell's first beacon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ibss_rejoin_secs: Option<u64>,
     /// Known problems on this hardware, one sentence each, for the person
     /// at the computer. The probe reports them.
     #[serde(default)]
@@ -156,6 +164,9 @@ impl Quirk {
         if self.channels.is_empty() {
             return Err("channels is empty".into());
         }
+        if self.ibss_rejoin_secs == Some(0) {
+            return Err("ibss_rejoin_secs must be greater than zero".into());
+        }
         Ok(())
     }
 }
@@ -237,6 +248,37 @@ mod tests {
         assert!(!q.reconnect_after_monitor);
         assert_eq!(q.channels, [44, 149, 6]);
         assert_eq!(q.notes, "");
+    }
+
+    #[test]
+    fn intel_8265_workarounds_are_opt_in_and_device_specific() {
+        let quirks = packaged();
+        let (q, source) = quirks.get("iwlwifi", Some("8086:24fd"));
+        assert_eq!(source, Source::Device);
+        assert_eq!(q.status, Status::Untested);
+        assert_eq!(q.mode, Mode::Exclusive);
+        assert_eq!(q.channels, [6]);
+        assert!(q.unicast_groups);
+        assert_eq!(q.ibss_rejoin_secs, Some(9));
+
+        for id in ["8086:51f0", "8086:24f3", "8086:095a"] {
+            let (q, _) = quirks.get("iwlwifi", Some(id));
+            assert!(!q.unicast_groups, "unexpected workaround for {id}");
+            assert_eq!(q.ibss_rejoin_secs, None);
+        }
+    }
+
+    #[test]
+    fn a_zero_ibss_rejoin_interval_is_rejected_before_starting_the_radio() {
+        let result = Quirks::parse(
+            r#"
+            [drivers.iwlwifi]
+            status = "untested"
+            mode = "exclusive"
+            ibss_rejoin_secs = 0
+            "#,
+        );
+        assert!(result.is_err(), "a zero interval panics the supervisor");
     }
 
     #[test]

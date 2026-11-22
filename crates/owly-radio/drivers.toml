@@ -90,7 +90,7 @@ channels = [6]
 issues = [
     "Intel cards run on channel 6: no phone has used their ad-hoc cell on 5 GHz.",
 ]
-notes = "Intel AX200 (kernel 6.19.8), AX201 (kernels 6.8 and 7.2.9), AX211 (kernels 7.0 and 7.2.3), BE on Panther Lake (kernel 7.2), BE200 (kernel 7.2.5), 9560 (kernel 7.2.8) and 9260 (kernel 7.2.12). Associated, the firmware passes up no AWDL frames. With the station down the firmware forgets its country and is back on the world's regulatory domain, where all of 5 GHz is No IR: the AX201 gets EINVAL on every 5 GHz cell, the AX200 on 149. A scan from the cell teaches the AX201 its country again (GB), and it then starts a cell on 149 (44 stays No IR), but an iPhone never engaged there, whether its Wi-Fi was on 44 or off (AWDL master channel 149, 149 in one slot of 16), and found it on 6 within 3 s both times. An Arrow Lake AX211 (8086:7740, kernel 7.0) starts one on 149 that drops. A 2.4 MB photo from an iPhone in 17 s, to it in 10.5 s. Some AX211s refuse an ad-hoc interface beside the station, so the station becomes the cell."
+notes = "Intel AX200 (kernel 6.19.8), AX201 (kernels 6.8 and 7.2.9), AX211 (kernels 7.0 and 7.2.3), BE on Panther Lake (kernel 7.2), BE200 (kernels 7.2.5 and 7.3.4), 9560 (kernel 7.2.8) and 9260 (kernel 7.2.12). Associated, the firmware passes up no AWDL frames: a 9560 (kernel 7.2.15) tried in shared mode on 149 sent about 5,800 action frames in 4 minutes and received none from an iPhone beside it. With the station down the firmware forgets its country and is back on the world's regulatory domain, where all of 5 GHz is No IR: the AX201 gets EINVAL on every 5 GHz cell, the AX200 on 149. A scan from the cell teaches the AX201 its country again (GB), and it then starts a cell on 149 (44 stays No IR), but an iPhone never engaged there, whether its Wi-Fi was on 44 or off (AWDL master channel 149, 149 in one slot of 16), and found it on 6 within 3 s both times. An Arrow Lake AX211 (8086:7740, kernel 7.0) starts one on 149 that drops. A 2.4 MB photo from an iPhone in 17 s, to it in 10.5 s. Some AX211s refuse an ad-hoc interface beside the station, so the station becomes the cell."
 
 [devices."8086:095a"]
 status = "broken"
@@ -120,13 +120,15 @@ issues = [
 notes = "Intel Wireless-AC 8260 (NUC6i7KYK, 8086:24f3, kernel 6.12)."
 
 [devices."8086:24fd"]
-status = "broken"
+status = "untested"
 mode = "exclusive"
 channels = [6]
+unicast_groups = true
+ibss_rejoin_secs = 9
 issues = [
-    "This Intel Wireless-AC 8265's firmware (8265-36) stalls a transmit queue and resets about 10 s after the ad-hoc cell starts on channel 6.",
+    "This Intel Wireless-AC 8265's firmware (8265-36) never sends the ad-hoc cell's group frames, and stops sending to its stations at the cell's first beacon. Owly sends group frames to each peer instead and rejoins the cell every 9 s, which restarts the firmware: a transfer pauses for about 1 s every 10 s.",
 ]
-notes = "Intel Dual Band Wireless-AC 8265 (EliteBook x360 1030 G3, 8086:24fd, kernel 6.12). The reset repeats until the driver is reloaded. With a hidden AP forced in the cell's place, it runs without resetting but hears no AWDL action frames from the phone."
+notes = "Intel Dual Band Wireless-AC 8265 (EliteBook x360 1030 G3, 8086:24fd, kernel 6.12; ASUS X580VD, kernel 7.0.14). Without the quirks the group queue stalls and the firmware resets every ~21 s, until the driver is reloaded. With a hidden AP forced in the cell's place, it runs without resetting but hears no AWDL action frames from the phone. With them, on the X580VD: four photos from an iPhone (10.3 MB) and one to it (1.1 MB in 12 s) in one session. Leaving the cell asserts the firmware (ADVANCED_SYSASSERT 0x3437); owlymon0 and awdl0 survive the restart. Firmware 8265-34 stalls the same way."
 
 [drivers.rtw88_8822be]
 status = "tested"
@@ -194,6 +196,14 @@ status = "tested"
 mode = "exclusive"
 notes = "Realtek RTL8922AE (ASUS ProArt B850-CREATOR WIFI NEO, 10ec:8922, kernel 7.3.0), with country IL in radio.toml and the station idle on a machine on Ethernet. No ad-hoc mode: runs a hidden AP. Both directions with an iPhone on channel 44."
 
+# Developer note: the community `rtl8188fu` DKMS driver cannot run Owly on this
+# card. It advertises IBSS but cannot start a cell on 2437 MHz (EINVAL, and the
+# USB device resets), and its cfg80211 ->add_virtual_intf returns -ENODEV for
+# AP/IBSS/STATION, so only a MONITOR interface can be added. Hiding IBSS so the
+# probe selects the hidden-AP path still fails when creating `owlyap0` (-ENODEV).
+# Shared mode is unavailable too: no monitor beside the station. The in-kernel
+# `rtl8xxxu` is the driver that works, as it is a proper mac80211 driver and can
+# create the hidden AP. Observed on Fedora 44 / kernel 6.19.10.
 [drivers.rtl8xxxu]
 status = "untested"
 mode = "exclusive"
@@ -201,7 +211,7 @@ channels = [6]
 issues = [
     "This card has only 2.4 GHz, so it runs on channel 6, where an iPhone spends one slot in sixteen: a 2.6 MB photo takes about 75 s.",
 ]
-notes = "Realtek RTL8188FTV (USB, 0bda:f179, kernel 6.14). No ad-hoc mode: runs a hidden AP. A 2.6 MB photo from an iPhone on channel 6 at 32 to 35 kB/s. Sending to the phone is untested: that machine had no Bluetooth for the BLE wake-up."
+notes = "Realtek RTL8188FTV (USB, 0bda:f179). No ad-hoc mode: runs a hidden AP. Both directions work on channel 6: Linux Mint 22.3 (kernel 6.14, 2.6 MB photo received at 32-35 kB/s) and Fedora 44 (kernel 6.19.10, receive and send with BLE wake-up)."
 
 [drivers.ath9k]
 status = "tested"
