@@ -1,0 +1,79 @@
+{
+  "owly": "0.4.3",
+  "time": 1795310576,
+  "kernel": "7.3.5-zen1-1-zen",
+  "os": "Arch Linux",
+  "machine": "LENOVO ThinkBook 16 G4+ ARA",
+  "driver": "rtw89_8852be",
+  "device": "10ec:b852",
+  "status": "tested",
+  "mode": "shared",
+  "channel": 44,
+  "transfers": "owly",
+  "steps": [
+    {
+      "step": "probe",
+      "result": "pass",
+      "detail": "ready"
+    },
+    {
+      "step": "NetworkManager",
+      "result": "pass",
+      "detail": "leaves Owly's interfaces alone"
+    },
+    {
+      "step": "baseline",
+      "result": "pass",
+      "detail": "10/10 replies"
+    },
+    {
+      "step": "start",
+      "result": "pass",
+      "ms": 138
+    },
+    {
+      "step": "phone heard",
+      "result": "pass"
+    },
+    {
+      "step": "shown on the phone",
+      "result": "pass"
+    },
+    {
+      "step": "phone -> computer",
+      "result": "pass"
+    },
+    {
+      "step": "computer -> phone",
+      "result": "pass",
+      "ms": 4478
+    },
+    {
+      "step": "stop",
+      "result": "pass",
+      "ms": 107
+    },
+    {
+      "step": "Wi-Fi after teardown",
+      "result": "pass",
+      "detail": "57/60 replies, longest gap 2 s"
+    }
+  ],
+  "wifi": {
+    "baseline": {
+      "sent": 10,
+      "received": 10,
+      "longest_gap_s": 0
+    },
+    "window": {
+      "sent": 82,
+      "received": 80,
+      "longest_gap_s": 1
+    },
+    "after": {
+      "sent": 60,
+      "received": 57,
+      "longest_gap_s": 2
+    }
+  }
+}
