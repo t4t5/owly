@@ -19,7 +19,7 @@ use crate::ip::Ipv6Packet;
 use crate::peer::{Peer, PeerInfo};
 use crate::rate::TxRate;
 use crate::sync::{Clock, MULTICAST_GUARD_US, SLOT_US, UNICAST_GUARD_US};
-use crate::tlv::{self, Advert, HtCapabilities, Own};
+use crate::tlv::{self, Advert, HtCapabilities, Own, VhtCapabilities};
 use crate::{MacAddr, TU, Time};
 
 /// What a node is given.
@@ -170,7 +170,9 @@ pub struct Stats {
 /// Announced in the Version TLV: macOS, as legacy announced.
 const DEVCLASS: u8 = tlv::devclass::MACOS;
 /// What the HT Capabilities TLV announces.
-const HT: HtCapabilities = HtCapabilities::ONE_STREAM;
+const HT: HtCapabilities = HtCapabilities::TWO_STREAM;
+/// What the VHT Capabilities IE (TLV 17) announces on 5 GHz channels.
+const VHT: VhtCapabilities = VhtCapabilities::TWO_STREAM_80MHZ;
 /// PSFs every 110 TU (§3.2).
 const PSF_INTERVAL_TU: u16 = 110;
 /// Peers unheard for this long are dropped: 5 s, as legacy patch `owl-07`
@@ -699,6 +701,7 @@ impl Node {
             sequence: &self.sequence,
             election: &self.election,
             ht: Some(HT),
+            vht: (self.cfg.radio.channel.0 > 14).then_some(VHT),
         };
         let mif = subtype == frame::subtype::MIF;
         let bytes = frame::action_frame(self.cfg.addr, seq, subtype, now.micros() as u32, |out| {

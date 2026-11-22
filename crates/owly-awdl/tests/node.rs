@@ -63,6 +63,7 @@ fn frame_from(
         sequence,
         election: &e,
         ht: Some(HtCapabilities::ONE_STREAM),
+        vht: None,
     };
     frame::action_frame(mac, 1, kind, 0, |out| {
         tlv::put_all(out, &own, kind == subtype::MIF)

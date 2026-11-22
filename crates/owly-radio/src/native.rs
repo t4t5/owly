@@ -17,7 +17,9 @@ use crate::radio::{MacAddr, PeerInfo};
 use owly_awdl::driver::{self, Air, Netif, Received, Running};
 use owly_awdl::frame::Frame;
 use owly_awdl::{Config, Ipv6Packet};
+use tokio::io::AsyncReadExt;
 use tokio::io::unix::AsyncFd;
+use tokio::net::UnixStream;
 use tokio::sync::watch;
 
 use crate::radiotap;
@@ -92,6 +94,69 @@ impl Native {
         Ok(Native { running, index })
     }
 
+    /// Connects to a user-space radio daemon (such as `mtkradio`) over a UNIX
+    /// stream socket using the `radio_link` framing protocol, creates `tap`,
+    /// and starts `owly-awdl` on it.
+    pub fn start_socket(
+        sock_path: &str,
+        tap: &str,
+        cfg: Config,
+        peers: watch::Sender<Vec<PeerInfo>>,
+    ) -> io::Result<Native> {
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixStream as StdUnixStream;
+
+        let mut std_stream = StdUnixStream::connect(sock_path)?;
+        // Read RADIO_LINK_HELLO (8-byte hdr + 8-byte hello).
+        let mut hello = [0u8; 16];
+        std_stream.read_exact(&mut hello)?;
+
+        // Send RADIO_LINK_SET_ADDRESS (type=6, len=6) and BSSID filter (type=5, len=6).
+        let mut set_addr = [0u8; 14];
+        set_addr[0..2].copy_from_slice(&6u16.to_le_bytes());
+        set_addr[4..8].copy_from_slice(&6u32.to_le_bytes());
+        set_addr[8..14].copy_from_slice(&cfg.addr.0);
+        std_stream.write_all(&set_addr)?;
+
+        let mut set_bssid = [0u8; 14];
+        set_bssid[0..2].copy_from_slice(&5u16.to_le_bytes());
+        set_bssid[4..8].copy_from_slice(&6u32.to_le_bytes());
+        set_bssid[8..14].copy_from_slice(&[0x00, 0x25, 0x00, 0xff, 0x94, 0x73]);
+        std_stream.write_all(&set_bssid)?;
+
+        std_stream.set_nonblocking(true)?;
+        tune_unix_socket_buffers(std_stream.as_raw_fd());
+
+        let mut rtnl = Rtnl::open()?;
+        let tap_fd = open_tap(tap)?;
+        let index = if_index(tap)?;
+        let _ = std::fs::write(format!("/proc/sys/net/ipv6/conf/{tap}/addr_gen_mode"), "1");
+        let _ = std::fs::write(format!("/proc/sys/net/ipv6/conf/{tap}/accept_dad"), "0");
+        let mac = cfg.addr;
+        rtnl.set_mac(index, mac)?;
+        rtnl.set_mtu(index, TAP_MTU)?;
+        rtnl.add_link_local_nodad(index, mac.link_local())?;
+        rtnl.set_up(index, true)?;
+
+        let name = tap.to_string();
+        let running = driver::spawn(
+            cfg,
+            move || {
+                let air = SocketAir::new(UnixStream::from_std(std_stream)?);
+                let tap = Tap {
+                    fd: register(tap_fd)?,
+                    name,
+                    index,
+                    rtnl,
+                    buf: vec![0; 16 * 1024],
+                };
+                Ok((air, tap))
+            },
+            peers,
+        )?;
+        Ok(Native { running, index })
+    }
+
     /// Why the node stopped by itself, once it has.
     pub fn failed(&self) -> watch::Receiver<Option<String>> {
         self.running.failed()
@@ -146,6 +211,158 @@ impl Air for Monitor {
                 Ok(())
             }
         }
+    }
+}
+
+/// Size of `SocketAir`'s internal read buffer so one `read()` pulls many frames.
+const SOCKET_RX_BUF: usize = 64 * 1024;
+/// Maximum `radio_link` payload accepted from `mtkradio`.
+const SOCKET_MAX_BODY: usize = 16 * 1024;
+/// Socket send/receive buffer size (4 MiB) for high-throughput bursts.
+const SOCKET_BUF_BYTES: i32 = 4 << 20;
+
+/// Cancel-safe UNIX socket `Air` implementation for user-space radio daemons (`mtkradio`).
+struct SocketAir {
+    stream: UnixStream,
+    rx_buf: Vec<u8>,
+    rx_start: usize,
+    rx_end: usize,
+    tx_buf: Vec<u8>,
+}
+
+impl SocketAir {
+    fn new(stream: UnixStream) -> Self {
+        Self {
+            stream,
+            rx_buf: vec![0u8; SOCKET_RX_BUF],
+            rx_start: 0,
+            rx_end: 0,
+            tx_buf: Vec::with_capacity(4128),
+        }
+    }
+}
+
+/// Appends the radiotap TX header for `rate`/`no_ack` into `out` without allocating.
+/// Matches [`radiotap::tx_header`] byte-for-byte.
+fn write_tx_radiotap(out: &mut Vec<u8>, rate: owly_awdl::TxRate, no_ack: bool) {
+    match rate {
+        owly_awdl::TxRate::Legacy(r) => {
+            if no_ack {
+                out.extend_from_slice(&[0, 0, 12, 0, 0x04, 0x80, 0, 0, r, 0, 0x08, 0]);
+            } else {
+                out.extend_from_slice(&[0, 0, 9, 0, 0x04, 0, 0, 0, r]);
+            }
+        }
+        owly_awdl::TxRate::Ht { mcs, sgi } => {
+            let flags = if sgi { 0x04 } else { 0 };
+            if no_ack {
+                out.extend_from_slice(&[0, 0, 13, 0, 0, 0x80, 0x08, 0, 0x08, 0, 0x07, flags, mcs]);
+            } else {
+                out.extend_from_slice(&[0, 0, 11, 0, 0, 0, 0x08, 0, 0x07, flags, mcs]);
+            }
+        }
+    }
+}
+
+fn tune_unix_socket_buffers(fd: std::os::fd::RawFd) {
+    use nix::libc;
+    let size = SOCKET_BUF_BYTES;
+    for opt in [libc::SO_RCVBUF, libc::SO_SNDBUF] {
+        #[allow(unsafe_code)]
+        // SAFETY: `size` is a valid i32 living through the setsockopt call.
+        unsafe {
+            libc::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                opt,
+                (&size as *const i32).cast(),
+                size_of::<i32>() as u32,
+            );
+        }
+    }
+}
+
+impl Air for SocketAir {
+    async fn recv(&mut self) -> io::Result<Received> {
+        loop {
+            let avail = self.rx_end - self.rx_start;
+            if avail >= 8 {
+                let hdr = &self.rx_buf[self.rx_start..self.rx_start + 8];
+                let msg_type = u16::from_le_bytes([hdr[0], hdr[1]]);
+                let body_len = u32::from_le_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]) as usize;
+                if body_len > SOCKET_MAX_BODY {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "oversized radio_link frame",
+                    ));
+                }
+                let frame_len = 8 + body_len;
+                if avail >= frame_len {
+                    let body_start = self.rx_start + 8;
+                    let body_end = self.rx_start + frame_len;
+                    self.rx_start = body_end;
+                    if self.rx_start == self.rx_end {
+                        self.rx_start = 0;
+                        self.rx_end = 0;
+                    }
+                    if msg_type == 2 {
+                        if let Some(rx) = radiotap::parse(&self.rx_buf[body_start..body_end]) {
+                            return Ok(Received {
+                                bytes: rx.frame.to_vec(),
+                                rssi: rx.rssi,
+                            });
+                        }
+                    }
+                    continue;
+                }
+            }
+
+            if self.rx_start > 0 && self.rx_buf.len() - self.rx_end < SOCKET_MAX_BODY + 8 {
+                self.rx_buf.copy_within(self.rx_start..self.rx_end, 0);
+                self.rx_end -= self.rx_start;
+                self.rx_start = 0;
+            }
+
+            let n = self.stream.read(&mut self.rx_buf[self.rx_end..]).await?;
+            if n == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "mtkradio socket closed",
+                ));
+            }
+            self.rx_end += n;
+        }
+    }
+
+    fn send(&mut self, frame: Frame) -> Result<(), Frame> {
+        use nix::errno::Errno;
+        use nix::sys::socket::{MsgFlags, send};
+
+        self.tx_buf.clear();
+        self.tx_buf.extend_from_slice(&[3, 0, 0, 0, 0, 0, 0, 0]); // RADIO_LINK_TX
+        write_tx_radiotap(&mut self.tx_buf, frame.rate, frame.no_ack);
+        self.tx_buf.extend_from_slice(&frame.bytes);
+        let payload_len = (self.tx_buf.len() - 8) as u32;
+        self.tx_buf[4..8].copy_from_slice(&payload_len.to_le_bytes());
+
+        let fd = self.stream.as_raw_fd();
+        let flags = MsgFlags::MSG_NOSIGNAL | MsgFlags::MSG_DONTWAIT;
+        let mut written = 0;
+        while written < self.tx_buf.len() {
+            match send(fd, &self.tx_buf[written..], flags) {
+                Ok(0) => return Ok(()),
+                Ok(n) => written += n,
+                Err(Errno::EINTR) => continue,
+                Err(Errno::EAGAIN | Errno::ENOBUFS) => {
+                    if written == 0 {
+                        return Err(frame);
+                    }
+                    std::thread::yield_now();
+                }
+                Err(_) => return Ok(()),
+            }
+        }
+        Ok(())
     }
 }
 
@@ -327,4 +544,105 @@ fn open_tap(name: &str) -> io::Result<OwnedFd> {
         tracing::info!("{name} keeps its offloads: {}", io::Error::last_os_error());
     }
     Ok(fd)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use owly_awdl::TxRate;
+    use tokio::io::AsyncWriteExt;
+
+    fn radio_link_rx(freq: u16, rssi: i8, payload: &[u8]) -> Vec<u8> {
+        let mut body = radiotap::rx_header(Some(freq), Some(rssi));
+        body.extend_from_slice(payload);
+        let mut wire = Vec::with_capacity(8 + body.len());
+        wire.extend_from_slice(&2u16.to_le_bytes()); // RADIO_LINK_RX
+        wire.extend_from_slice(&0u16.to_le_bytes());
+        wire.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        wire.extend_from_slice(&body);
+        wire
+    }
+
+    #[test]
+    fn write_tx_radiotap_matches_radiotap_tx_header() {
+        for rate in [
+            TxRate::Legacy(12),
+            TxRate::Legacy(24),
+            TxRate::Legacy(108),
+            TxRate::Ht { mcs: 0, sgi: false },
+            TxRate::Ht { mcs: 7, sgi: true },
+            TxRate::Ht { mcs: 15, sgi: true },
+        ] {
+            for no_ack in [false, true] {
+                let mut buf = Vec::new();
+                write_tx_radiotap(&mut buf, rate, no_ack);
+                assert_eq!(buf, radiotap::tx_header(rate, no_ack));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn socket_air_recv_batches_and_is_cancel_safe() {
+        let (a, mut b) = UnixStream::pair().unwrap();
+        let mut air = SocketAir::new(a);
+
+        // Write a non-RX control frame + two RX frames in one burst.
+        let mut burst = Vec::new();
+        // RADIO_LINK_HELLO (type=1, len=8) should be skipped cleanly.
+        burst.extend_from_slice(&1u16.to_le_bytes());
+        burst.extend_from_slice(&0u16.to_le_bytes());
+        burst.extend_from_slice(&8u32.to_le_bytes());
+        burst.extend_from_slice(&[0u8; 8]);
+        let f1 = radio_link_rx(5745, -42, b"first-frame-body");
+        let f2 = radio_link_rx(5745, -43, b"second-frame-body");
+        let f3 = radio_link_rx(5745, -44, b"third-split-frame");
+        burst.extend_from_slice(&f1);
+        burst.extend_from_slice(&f2);
+        // Append only the first 5 bytes of f3 so recv() must wait and can be cancelled.
+        burst.extend_from_slice(&f3[..5]);
+        b.write_all(&burst).await.unwrap();
+
+        let r1 = air.recv().await.unwrap();
+        assert_eq!(r1.bytes, b"first-frame-body");
+        assert_eq!(r1.rssi, Some(-42));
+
+        let r2 = air.recv().await.unwrap();
+        assert_eq!(r2.bytes, b"second-frame-body");
+        assert_eq!(r2.rssi, Some(-43));
+
+        // Start recv() on the incomplete f3 and cancel it mid-await.
+        let timed = tokio::time::timeout(std::time::Duration::from_millis(20), air.recv()).await;
+        assert!(timed.is_err(), "incomplete frame should remain pending");
+
+        // Now send the rest of f3; cancel-safety guarantees zero lost bytes.
+        b.write_all(&f3[5..]).await.unwrap();
+        let r3 = air.recv().await.unwrap();
+        assert_eq!(r3.bytes, b"third-split-frame");
+        assert_eq!(r3.rssi, Some(-44));
+    }
+
+    #[tokio::test]
+    async fn socket_air_send_frames_correctly() {
+        let (a, mut b) = UnixStream::pair().unwrap();
+        let mut air = SocketAir::new(a);
+
+        let frame = Frame {
+            bytes: b"hello-80211".to_vec(),
+            to: MacAddr([0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff]),
+            rate: TxRate::Ht { mcs: 7, sgi: true },
+            no_ack: true,
+        };
+        assert!(air.send(frame.clone()).is_ok());
+
+        let mut hdr = [0u8; 8];
+        b.read_exact(&mut hdr).await.unwrap();
+        assert_eq!(u16::from_le_bytes([hdr[0], hdr[1]]), 3); // RADIO_LINK_TX
+        let len = u32::from_le_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]) as usize;
+        let mut payload = vec![0u8; len];
+        b.read_exact(&mut payload).await.unwrap();
+
+        let mut expected = radiotap::tx_header(frame.rate, frame.no_ack);
+        expected.extend_from_slice(&frame.bytes);
+        assert_eq!(payload, expected);
+    }
 }
