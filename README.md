@@ -213,7 +213,7 @@ AirDrop runs over AWDL, a Wi-Fi link Apple devices use to talk to each other dir
 - **`owlyd`**, a small system service, takes over your Wi-Fi card, runs AWDL on it, and hands the resulting `awdl0` network interface to the app that asked for it. When the app is done, or crashes, owlyd gives your Wi-Fi back.
 - **AirDrop itself** (`owly receive` or Omdrop) runs as your user, not as root, and talks over `awdl0` like any other network.
 
-The pieces are Rust crates you can use in other projects: `owly-awdl` (AWDL), `owly-airdrop` (AirDrop) and `owly-radio` (the Wi-Fi card on Linux). [docs/SPEC.md](docs/SPEC.md) describes the protocol they implement. To add a new kind of radio, such as an ESP32 over USB, implement `owly-awdl`'s `Air` trait if it only sends and receives Wi-Fi frames, or `owly-radio`'s `Backend` trait if it runs AWDL itself.
+The pieces are Rust crates you can use in other projects: `owly-awdl` (AWDL), `owly-airdrop` (AirDrop), `owly-radio` (the Wi-Fi card on Linux), and [`owly-userspace`](crates/owly-userspace) (a rootless, cross-platform 7-layer userspace stack running `owly-awdl`, `smoltcp`, `rustls`, and `owly-airdrop` in a single process with simulated and UDP transports plus USB radio framing and firmware-transfer primitives — try `cargo run -p owly-userspace --example showcase`). [docs/SPEC.md](docs/SPEC.md) describes the protocol they implement. To add a new kind of radio, such as an ESP32 over USB, implement `owly-awdl`'s `Air` trait if it only sends and receives Wi-Fi frames, or `owly-radio`'s `Backend` trait if it runs AWDL itself.
 
 ## Development
 
