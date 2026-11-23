@@ -28,8 +28,10 @@ pub const MULTICAST_GUARD_US: u64 = 16 * TU;
 /// and when that boundary was.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Clock {
-    /// When the slot starting with AW `aw_counter` began.
+    /// The start of the slot holding `aw_counter`, clamped to the local epoch.
     last: Time,
+    /// Portion of that slot before the local epoch, in microseconds.
+    before_epoch_us: u64,
     aw_counter: u16,
 }
 
@@ -38,12 +40,14 @@ impl Clock {
     pub const fn new(now: Time) -> Clock {
         Clock {
             last: now,
+            before_epoch_us: 0,
             aw_counter: 0,
         }
     }
 
     fn since(&self, now: Time) -> u64 {
-        now.since(self.last)
+        // Only the low bits select an AW or slot, including at the u64 wrap.
+        now.since(self.last).wrapping_add(self.before_epoch_us)
     }
 
     /// Microseconds to the next slot boundary, in `1..=SLOT_US`.
@@ -92,7 +96,9 @@ impl Clock {
     /// `next_tu` TU away, and the slot holds AW `aw_counter`.
     pub fn update(&mut self, now: Time, next_tu: u16, aw_counter: u16) {
         let next = (next_tu as u64).min(SLOT_TU);
-        self.last = now.minus((SLOT_TU - next) * TU);
+        let phase_us = (SLOT_TU - next) * TU;
+        self.last = now.minus(phase_us);
+        self.before_epoch_us = phase_us.saturating_sub(now.micros());
         self.aw_counter = aw_counter & !(PRESENCE_MODE as u16 - 1);
     }
 
@@ -152,6 +158,28 @@ mod tests {
         // A peer 3 TU ahead and one a slot behind.
         assert_eq!(c.error_tu(now, 17, 401), 3);
         assert_eq!(c.error_tu(now, 20, 397), -64);
+    }
+
+    // spec: AWDL-7
+    #[test]
+    fn adopts_a_slot_that_started_before_the_local_epoch() {
+        let mut c = Clock::new(Time(0));
+        let rx = Time(500);
+        // The master is in its last AW before the counter wraps, with 7 TU
+        // left in the slot. The follower has been running for only 500 us.
+        c.update(rx, 7, u16::MAX);
+        assert_eq!(c.current_aw(rx), u16::MAX);
+        assert_eq!(c.error_tu(rx, 7, u16::MAX), 0);
+        assert_eq!(c.next_slot_us(rx), 7 * TU);
+        assert_eq!(c.slot(rx.plus(7 * TU - 1)), 15);
+        assert_eq!(c.current_aw(rx.plus(7 * TU)), 0);
+        assert_eq!(c.slot(rx.plus(7 * TU)), 0);
+
+        // A later sample pins a slot entirely on our local clock.
+        let later = rx.plus(2 * SLOT_US);
+        c.update(later, 60, 4);
+        assert_eq!(c.error_tu(later, 60, 4), 0);
+        assert_eq!(c.next_slot_us(later), 60 * TU);
     }
 
     #[test]
