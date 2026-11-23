@@ -1,0 +1,53 @@
+[package]
+name = "owly-userspace"
+description = "Userspace 7-layer AWDL + IPv6 + AirDrop stack with virtual/UDP transports and USB radio framing primitives."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["awdl", "airdrop", "smoltcp", "userspace", "sans-io"]
+categories = ["network-programming"]
+
+[features]
+default = ["udp", "ring"]
+ring = ["rustls/ring"]
+udp = ["dep:tokio"]
+usb = ["dep:nusb"]
+
+[dependencies]
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
+getrandom = "0.3"
+nusb = { version = "0.2", optional = true }
+owly-airdrop = { version = "0.4.3", path = "../owly-airdrop", default-features = false, features = ["tokio"] }
+owly-awdl = { version = "0.4.3", path = "../owly-awdl" }
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12"] }
+smoltcp = { version = "0.12", default-features = false, features = ["std", "medium-ethernet", "medium-ip", "multicast", "proto-ipv6", "socket-udp", "socket-tcp"] }
+tokio = { version = "1", features = ["net", "rt", "time"], optional = true }
+
+[dev-dependencies]
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+
+[lints]
+workspace = true
+
+[[example]]
+name = "udp_bridge"
+required-features = ["ring", "udp"]
+
+[[example]]
+name = "showcase"
+required-features = ["ring"]
+
+[[example]]
+name = "usb_probe"
+required-features = ["usb"]
+
+[[example]]
+name = "virtual_airdrop"
+required-features = ["ring"]
+
+[package.metadata.docs.rs]
+all-features = true

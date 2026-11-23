@@ -26,10 +26,14 @@ test:
 # Everything CI checks: lints, tests, portability, spec coverage, vectors, the hardware table
 ci: check test
     # The portable crates on Windows and Android (owly-awdl with its driver),
-    # the AirDrop core without a runtime, and the no_std AWDL core on ESP32-C3
+    # the AirDrop core without a runtime, the userspace 7-layer stack without
+    # ring's C toolchain, and the no_std AWDL core on ESP32-C3
     cargo check --locked --target x86_64-pc-windows-msvc -p owly-awdl -p owly-airdrop --all-features
     cargo check --locked --target aarch64-linux-android -p owly-awdl -p owly-airdrop --all-features
+    cargo check --locked --target x86_64-pc-windows-msvc -p owly-userspace --no-default-features --features udp,usb
+    cargo check --locked --target aarch64-linux-android -p owly-userspace --no-default-features --features udp,usb
     cargo check --locked -p owly-airdrop --no-default-features
+    cargo check --locked -p owly-userspace --no-default-features
     cargo check --locked --target riscv32imc-unknown-none-elf -p owly-awdl
     # Every in-scope MUST in docs/ has a test or a policy entry (tests/coverage.toml)
     cargo xtask coverage
@@ -117,6 +121,7 @@ bump version:
     old=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml)
     sed -i "s/^version = \"$old\"$/version = \"$new\"/" Cargo.toml
     sed -i "s/^owly-awdl = { version = \"$old\"/owly-awdl = { version = \"$new\"/" crates/owly-radio/Cargo.toml
+    sed -i -e "s/^owly-awdl = { version = \"$old\"/owly-awdl = { version = \"$new\"/" -e "s/^owly-airdrop = { version = \"$old\"/owly-airdrop = { version = \"$new\"/" crates/owly-userspace/Cargo.toml
     sed -i -e "s/^pkgver=.*/pkgver=$new/" -e "s/^pkgrel=.*/pkgrel=1/" packaging/arch/*/PKGBUILD
     cargo update --workspace --quiet
     echo "$old -> $new"
