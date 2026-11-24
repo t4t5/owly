@@ -724,6 +724,7 @@ impl RadioWire for Ar9271Codec {
     feature = "usb",
     any(
         target_os = "linux",
+        target_os = "android",
         target_os = "macos",
         target_os = "windows",
         target_arch = "wasm32"
@@ -739,7 +740,9 @@ pub mod nusb_transport {
     use nusb::descriptors::TransferType;
     use nusb::transfer::{Buffer, Bulk, ControlIn, ControlOut, ControlType, In, Out, Recipient};
 
-    use crate::air::usb::{DetectedDongle, SupportedDongle};
+    #[cfg(not(target_os = "android"))]
+    use crate::air::usb::DetectedDongle;
+    use crate::air::usb::SupportedDongle;
 
     impl From<SupportedDongle> for super::UsbChipset {
         fn from(value: SupportedDongle) -> Self {
@@ -765,6 +768,7 @@ pub mod nusb_transport {
     impl UsbRadioHandle {
         /// Opens the USB device matching `dongle` (`bus_id` + `device_address`), claims its
         /// primary interface, and selects chipset-aware Bulk IN/OUT endpoints.
+        #[cfg(not(target_os = "android"))]
         pub fn open(dongle: &DetectedDongle) -> io::Result<Self> {
             let info = nusb::list_devices()
                 .wait()
@@ -783,6 +787,19 @@ pub mod nusb_transport {
                 })?;
 
             let device = info.open().wait().map_err(io::Error::other)?;
+            Self::from_device(dongle.kind, device)
+        }
+
+        /// Opens an already-authorized USB device file descriptor (for example from Android
+        /// `UsbDeviceConnection.getFileDescriptor()` over USB OTG or Linux `usbfs`),
+        /// claims its primary interface, and selects chipset-aware Bulk IN/OUT endpoints.
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        pub fn open_from_fd(kind: SupportedDongle, fd: std::os::fd::OwnedFd) -> io::Result<Self> {
+            let device = nusb::Device::from_fd(fd).wait().map_err(io::Error::other)?;
+            Self::from_device(kind, device)
+        }
+
+        fn from_device(kind: SupportedDongle, device: nusb::Device) -> io::Result<Self> {
             let cfg = device.active_configuration().map_err(io::Error::other)?;
 
             let mut chosen: Option<(u8, super::SelectedEndpoints)> = None;
@@ -793,7 +810,7 @@ pub mod nusb_transport {
                         .filter(|ep| ep.transfer_type() == TransferType::Bulk)
                         .map(|ep| (ep.address(), ep.max_packet_size()))
                         .collect();
-                    if let Some(selected) = super::select_endpoints(dongle.kind.into(), &bulk_eps) {
+                    if let Some(selected) = super::select_endpoints(kind.into(), &bulk_eps) {
                         chosen = Some((alt.interface_number(), selected));
                         break;
                     }
@@ -813,7 +830,7 @@ pub mod nusb_transport {
                 .map_err(io::Error::other)?;
 
             Ok(Self {
-                kind: dongle.kind,
+                kind,
                 interface_number,
                 bulk_out_ep: selected.bulk_out_ep,
                 bulk_in_ep: selected.bulk_in_ep,
@@ -1015,6 +1032,22 @@ pub mod nusb_transport {
                 .into_result()
                 .map_err(io::Error::other)?;
             Ok(buf.into_vec())
+        }
+    }
+
+    #[cfg(all(test, any(target_os = "linux", target_os = "android")))]
+    mod tests {
+        use std::os::fd::OwnedFd;
+
+        use super::*;
+
+        #[test]
+        fn open_from_fd_rejects_non_usbfs_descriptor() {
+            let file = tempfile::tempfile().unwrap();
+            let err = UsbRadioHandle::open_from_fd(SupportedDongle::Mt7612u, OwnedFd::from(file))
+                .err()
+                .expect("non-usbfs descriptor must fail cleanly");
+            assert!(!err.to_string().is_empty());
         }
     }
 }

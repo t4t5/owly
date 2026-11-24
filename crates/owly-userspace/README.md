@@ -61,7 +61,7 @@ application-appropriate limit.
 
 - `usb_radio` implements clean-room IEEE 802.11 bulk URB TXWI/RXWI framing (`Mt7612uCodec`, `Ar9271Codec`), chipset-aware endpoint selection (`select_endpoints` skipping MT7612U's `0x08` inband command pipe to select `0x04`/`0x84` data + `0x08`/`0x85` MCU pipes), `Mt7612uRomPatch`/`Mt7612uFirmware` image parsers, MCU command & FCE DMA upload builders, and `nusb_transport::load_mt7612u_firmware`.
 - `load_mt7612u_firmware` performs the firmware image transfer only; full hardware bring-up still needs chipset reset, patch-enable, firmware-start, EEPROM, calibration, and MCU channel sequences.
-- `nusb` enumeration and transport are available on Linux, macOS, and Windows. On Android, the wire codecs remain available but `discover_dongles` returns `Unsupported` because `nusb` does not expose device enumeration there.
+- `nusb` enumeration and transport are available on Linux, macOS, and Windows. On Android, `discover_dongles` returns `Unsupported` because `nusb` does not enumerate `/dev/bus/usb`, while `usb_radio::nusb_transport::UsbRadioHandle::open_from_fd` accepts an already-authorized file descriptor (for example from Android `UsbDeviceConnection.getFileDescriptor()` over USB OTG).
 - On Linux xHCI USB 3.0 hosts where `mt76x2u` stalls with `MAC RX failed to stop`, prefer a USB 2.0 High-Speed port or set `options mt76_usb disable_usb_sg=1`.
 
 ## Status
