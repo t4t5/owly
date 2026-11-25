@@ -52,6 +52,16 @@ pub struct Quirk {
     /// firmware stops sending to its stations from the cell's first beacon.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ibss_rejoin_secs: Option<u64>,
+    /// Tag monitor-injected frames with `ETH_P_PAE` (`0x888e`) so mac80211's
+    /// control-port path sets `IEEE80211_TX_CTL_USE_MINRATE` (giving stock
+    /// `mt7921e` `MT_TXD2_FIX_RATE` OFDM on 5 GHz instead of 1 Mbit/s CCK).
+    #[serde(default)]
+    pub tx_pae_fixrate: bool,
+    /// Register each valid AWDL peer as an unauthorized station (`AUTHORIZED`
+    /// clear) on exclusive mode's hidden AP interface, giving stock `mt7921e`
+    /// a per-peer hardware WCID instead of its throttled reserved WCID.
+    #[serde(default)]
+    pub ap_peer_sta: bool,
     /// Known problems on this hardware, one sentence each, for the person
     /// at the computer. The probe reports them.
     #[serde(default)]
@@ -167,6 +177,9 @@ impl Quirk {
         if self.ibss_rejoin_secs == Some(0) {
             return Err("ibss_rejoin_secs must be greater than zero".into());
         }
+        if self.ap_peer_sta && self.mode != Mode::Exclusive {
+            return Err("ap_peer_sta requires exclusive mode".into());
+        }
         Ok(())
     }
 }
@@ -209,8 +222,9 @@ mod tests {
         );
         assert!(usb.rx_ampdu, "legacy turned -A on there");
         let (mt7921, _) = quirks.get("mt7921e", None);
-        assert_eq!(mt7921.mode, Mode::ActiveMonitor);
-        assert_eq!(mt7921.channels, [6]);
+        assert_eq!(mt7921.mode, Mode::Exclusive);
+        assert_eq!(mt7921.channels, [44, 149, 6]);
+        assert!(mt7921.mt76_pm_off && mt7921.tx_pae_fixrate && mt7921.ap_peer_sta);
         assert!(!mt7921.issues.is_empty());
     }
 
@@ -295,5 +309,52 @@ mod tests {
         assert!(Quirks::parse(&ok.replace("shared", "sharde")).is_err());
         assert!(Quirks::parse(&format!("{ok}channels = [36]\n")).is_err());
         assert!(Quirks::parse(&ok.replace("shared", "active-monitor")).is_ok());
+    }
+
+    #[test]
+    fn mt7921e_workarounds_are_opt_in_and_driver_specific() {
+        let quirks = packaged();
+        for id in [
+            Some("14c3:0616"),
+            Some("14c3:7961"),
+            Some("14c3:7922"),
+            None,
+        ] {
+            let (q, source) = quirks.get("mt7921e", id);
+            assert_eq!(source, Source::Driver);
+            assert_eq!(q.status, Status::Untested);
+            assert_eq!(q.mode, Mode::Exclusive);
+            assert_eq!(q.channels, [44, 149, 6]);
+            assert!(q.mt76_pm_off);
+            assert!(q.tx_pae_fixrate);
+            assert!(q.ap_peer_sta);
+        }
+
+        for driver in [
+            "mt7925e",
+            "iwlwifi",
+            "mt76x2u",
+            "rtw89_8852be",
+            "rtw89_8852bu",
+        ] {
+            let (q, _) = quirks.get(driver, None);
+            assert!(!q.tx_pae_fixrate, "unexpected tx_pae_fixrate for {driver}");
+            assert!(!q.ap_peer_sta, "unexpected ap_peer_sta for {driver}");
+        }
+    }
+
+    #[test]
+    fn ap_peer_sta_requires_exclusive_mode() {
+        for mode in ["shared", "active-monitor"] {
+            let result = Quirks::parse(&format!(
+                r#"
+                [drivers.mt7921e]
+                status = "untested"
+                mode = "{mode}"
+                ap_peer_sta = true
+                "#
+            ));
+            assert!(result.is_err(), "{mode} must reject ap_peer_sta");
+        }
     }
 }

@@ -31,7 +31,7 @@ use crate::radio::{Backend, Capabilities, Error, Link, LinkState, PeerInfo};
 
 use crate::config::{CONFIG, Config};
 use crate::journal::Journal;
-use crate::native::Native;
+use crate::native::{self, Native};
 use crate::quirks::Quirks;
 use crate::rundir::RunDir;
 use crate::sys::{Ops, System};
@@ -120,7 +120,13 @@ impl Awdl for Native {
 /// second, `awdl0`, and publishing its valid peers on the last. Blocking.
 /// owly-awdl's [`Native`] outside tests.
 pub type StartAwdl = Arc<
-    dyn Fn(&str, &str, owly_awdl::Config, watch::Sender<Vec<PeerInfo>>) -> io::Result<Box<dyn Awdl>>
+    dyn Fn(
+            &str,
+            &str,
+            owly_awdl::Config,
+            native::Options,
+            watch::Sender<Vec<PeerInfo>>,
+        ) -> io::Result<Box<dyn Awdl>>
         + Send
         + Sync,
 >;
@@ -144,8 +150,10 @@ struct Live {
 
 impl Injection {
     pub fn new(ops: Arc<dyn Ops>, settings: Settings) -> Self {
-        let start: StartAwdl = Arc::new(|monitor, tap, cfg, peers| {
-            Ok(Box::new(Native::start(monitor, tap, cfg, peers)?))
+        let start: StartAwdl = Arc::new(|monitor, tap, cfg, opts, peers| {
+            Ok(Box::new(Native::start_with(
+                monitor, tap, cfg, opts, peers,
+            )?))
         });
         Injection::with_awdl(ops, settings, start)
     }
@@ -232,12 +240,14 @@ impl Injection {
         let (stop, stopped) = watch::channel(false);
         let announce = prepared.announce;
         let cfg = prepared.awdl;
+        let native_opts = prepared.native;
         let mac = cfg.addr;
         let start = self.start_awdl.clone();
-        let started =
-            tokio::task::spawn_blocking(move || start(MONITOR, AWDL_IFACE, cfg, peers_tx))
-                .await
-                .map_err(|e| Error::no_radio(e.to_string()))?;
+        let started = tokio::task::spawn_blocking(move || {
+            start(MONITOR, AWDL_IFACE, cfg, native_opts, peers_tx)
+        })
+        .await
+        .map_err(|e| Error::no_radio(e.to_string()))?;
         let node = match started {
             Ok(n) => n,
             Err(e) => {
