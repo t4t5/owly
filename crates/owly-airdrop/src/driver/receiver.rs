@@ -124,6 +124,9 @@ struct Slot {
     progress: Instant,
     /// An `/Ask` is open on it: prompting, or accepted and not yet uploaded.
     busy: bool,
+    /// Whether this connection has answered at least one HTTP request, making
+    /// it a quiet keep-alive candidate for same-peer eviction when not busy.
+    answered: bool,
     abort: Option<AbortHandle>,
 }
 
@@ -132,7 +135,16 @@ impl Slots {
     /// taken, or `None` if there's no room.
     fn admit(&mut self, peer: Ipv6Addr, max: usize) -> Option<u64> {
         if self.held.values().filter(|s| s.peer == peer).count() >= MAX_PER_PEER {
-            return None;
+            let (&key, _) = self
+                .held
+                .iter()
+                .filter(|(_, s)| s.peer == peer && !s.busy && s.answered)
+                .min_by_key(|(_, s)| s.progress)?;
+            let slot = self.held.remove(&key).unwrap();
+            tracing::debug!(peer = %slot.peer, "closing an idle peer connection to make room");
+            if let Some(abort) = slot.abort {
+                abort.abort();
+            }
         }
         if self.held.len() >= max {
             let (&key, _) = self
@@ -154,6 +166,7 @@ impl Slots {
                 peer,
                 progress: Instant::now(),
                 busy: false,
+                answered: false,
                 abort: None,
             },
         );
@@ -303,7 +316,13 @@ impl Task {
                     Event::Transmit(bytes) => {
                         if bytes.starts_with(b"HTTP/") {
                             tracing::debug!(peer = %self.peer, "-> {}", first_line(&bytes));
-                            held.update(|s| s.progress = Instant::now());
+                            let final_response = !bytes.starts_with(b"HTTP/1.1 1");
+                            held.update(|s| {
+                                s.progress = Instant::now();
+                                if final_response {
+                                    s.answered = true;
+                                }
+                            });
                         }
                         // Flushed: tokio-rustls may hold a record back
                         // when the socket is busy, and the peer would wait
@@ -354,6 +373,7 @@ impl Task {
                         let _ = self.events.try_send(ReceiverEvent::Withdrawn { id });
                     }
                     Event::Urls(urls) => {
+                        held.update(|s| s.busy = false);
                         let _ = self.events.send(ReceiverEvent::Urls { id, urls }).await;
                     }
                     Event::UploadStarted => match Staging::new(&self.options.destination).await {
@@ -545,5 +565,97 @@ mod tests {
         }
         assert_eq!(slots.admit(addr(1), 16), None);
         assert!(slots.admit(addr(2), 16).is_some());
+    }
+
+    // spec: SEC-10
+    #[test]
+    fn peer_idle_answered_keepalive_is_evicted_at_per_peer_cap() {
+        let mut slots = Slots::default();
+        let other = slots.admit(addr(2), 16).unwrap();
+        let keys: Vec<u64> = (0..MAX_PER_PEER)
+            .map(|i| {
+                let k = slots.admit(addr(1), 16).unwrap();
+                let s = slots.held.get_mut(&k).unwrap();
+                s.answered = true;
+                s.progress += Duration::from_secs(i as u64);
+                k
+            })
+            .collect();
+        let fresh = slots
+            .admit(addr(1), 16)
+            .expect("oldest idle keep-alive should be evicted");
+        assert_eq!(
+            slots.held.values().filter(|s| s.peer == addr(1)).count(),
+            MAX_PER_PEER
+        );
+        assert!(!slots.held.contains_key(&keys[0]));
+        assert!(slots.held.contains_key(&fresh));
+        assert!(slots.held.contains_key(&other));
+    }
+
+    // spec: SEC-10
+    #[test]
+    fn peer_busy_connections_are_never_evicted_at_per_peer_cap() {
+        let mut slots = Slots::default();
+        for _ in 0..MAX_PER_PEER {
+            let k = slots.admit(addr(1), 16).unwrap();
+            let s = slots.held.get_mut(&k).unwrap();
+            s.answered = true;
+            s.busy = true;
+        }
+        assert_eq!(slots.admit(addr(1), 16), None);
+        assert_eq!(slots.held.len(), MAX_PER_PEER);
+    }
+
+    // spec: SEC-10
+    #[test]
+    fn peer_mixed_slots_evict_only_idle_answered() {
+        let mut slots = Slots::default();
+        let keys: Vec<u64> = (0..MAX_PER_PEER)
+            .map(|i| {
+                let k = slots.admit(addr(1), 16).unwrap();
+                let s = slots.held.get_mut(&k).unwrap();
+                s.progress += Duration::from_secs(i as u64);
+                k
+            })
+            .collect();
+        // Slot 0: unanswered idle; slot 1: busy answered; slot 2: idle answered; slot 3: busy answered.
+        slots.held.get_mut(&keys[1]).unwrap().answered = true;
+        slots.held.get_mut(&keys[1]).unwrap().busy = true;
+        slots.held.get_mut(&keys[2]).unwrap().answered = true;
+        slots.held.get_mut(&keys[3]).unwrap().answered = true;
+        slots.held.get_mut(&keys[3]).unwrap().busy = true;
+
+        let fresh = slots
+            .admit(addr(1), 16)
+            .expect("single idle answered slot should be evicted");
+        assert!(!slots.held.contains_key(&keys[2]));
+        assert!(slots.held.contains_key(&keys[0]));
+        assert!(slots.held.contains_key(&keys[1]));
+        assert!(slots.held.contains_key(&keys[3]));
+        assert!(slots.held.contains_key(&fresh));
+    }
+
+    // spec: SEC-10
+    #[test]
+    fn peer_at_global_cap_reuses_its_own_idle_slot() {
+        let mut slots = Slots::default();
+        let other = slots.admit(addr(2), MAX_PER_PEER + 1).unwrap();
+        let keys: Vec<u64> = (0..MAX_PER_PEER)
+            .map(|i| {
+                let k = slots.admit(addr(1), MAX_PER_PEER + 1).unwrap();
+                let s = slots.held.get_mut(&k).unwrap();
+                s.answered = true;
+                s.progress += Duration::from_secs(i as u64 + 10);
+                k
+            })
+            .collect();
+        let fresh = slots
+            .admit(addr(1), MAX_PER_PEER + 1)
+            .expect("peer should reclaim its own idle slot without evicting another peer");
+        assert_eq!(slots.held.len(), MAX_PER_PEER + 1);
+        assert!(!slots.held.contains_key(&keys[0]));
+        assert!(slots.held.contains_key(&other));
+        assert!(slots.held.contains_key(&fresh));
     }
 }
