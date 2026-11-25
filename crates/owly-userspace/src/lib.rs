@@ -15,6 +15,16 @@ use std::sync::Once;
 
 pub mod air;
 pub mod archive;
+#[cfg(all(
+    feature = "usb",
+    any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "windows"
+    )
+))]
+pub mod mt7612u_hw;
 pub mod node;
 pub mod pcap;
 pub mod phy;

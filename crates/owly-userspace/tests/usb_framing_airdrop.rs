@@ -146,7 +146,11 @@ fn mt7612u_control_plane_firmware_mcu_and_monitor_setup() {
     assert_eq!(mcu.len(), 12); // 4 tx_info + 4 padded + 4 trailer
     assert_eq!(
         u32::from_le_bytes(mcu[0..4].try_into().unwrap()),
-        Mt7612uCodec::MCU_MSG_TYPE_CMD | (0x1f << 20) | (0x05 << 16) | 4
+        Mt7612uCodec::MCU_MSG_TYPE_CMD
+            | Mt7612uCodec::MCU_MSG_PORT_CPU_TX
+            | (0x1f << 20)
+            | (0x05 << 16)
+            | 4
     );
 
     let chunks = Mt7612uCodec::fw_upload_chunks(Mt7612uCodec::PATCH_LOAD_ADDR, &[0x33u8; 300], 128);

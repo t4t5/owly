@@ -30,6 +30,9 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 tempfile = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 
+[target.'cfg(windows)'.dev-dependencies]
+wintun = "0.5"
+
 [lints]
 workspace = true
 
@@ -48,6 +51,14 @@ required-features = ["usb"]
 [[example]]
 name = "virtual_airdrop"
 required-features = ["ring"]
+
+[[example]]
+name = "live_usb_airdrop"
+required-features = ["usb", "ring"]
+
+[[example]]
+name = "wintun_awdl"
+required-features = ["usb", "udp"]
 
 [package.metadata.docs.rs]
 all-features = true

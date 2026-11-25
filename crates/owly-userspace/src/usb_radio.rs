@@ -5,8 +5,8 @@
 //! - [`Mt7612uCodec`]: MediaTek MT7612U (`mt76x2u`, dual-band 5 GHz channels 44/149)
 //! - [`Ar9271Codec`]: Qualcomm Atheros AR9271 (`ath9k_htc`, 2.4 GHz channel 6)
 
-use owly_awdl::Frame;
 use owly_awdl::channel::Channel;
+use owly_awdl::{Frame, TxRate};
 
 /// USB control transfer descriptor (`bmRequestType = 0x40` / `0xC0`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -245,7 +245,7 @@ impl Mt7612uCodec {
     pub const TXWI_LEN: usize = 20;
     pub const TX_TRAILER_LEN: usize = 4;
     pub const RX_DMA_INFO_LEN: usize = 4;
-    pub const RXWI_LEN: usize = 24;
+    pub const RXWI_LEN: usize = 32;
 
     pub const VEND_DEV_MODE: u8 = 0x01;
     pub const VEND_WRITE: u8 = 0x02;
@@ -264,6 +264,7 @@ impl Mt7612uCodec {
     pub const REG_FCE_DMA_ADDR: u32 = 0x0230;
     pub const REG_FCE_DMA_LEN: u32 = 0x0234;
     pub const REG_USB_DMA_CFG: u32 = 0x0238;
+    pub const CFG_USB_U3DMA_CFG: u32 = 0x9018;
     pub const REG_TX_CPU_FROM_FCE_CPU_DESC_IDX: u32 = 0x09a8;
     pub const REG_MCU_CLOCK_CTL: u32 = 0x0708;
     pub const REG_MCU_COM_REG0: u32 = 0x0730;
@@ -273,9 +274,23 @@ impl Mt7612uCodec {
     pub const REG_MAC_ADDR_DW1: u32 = 0x100c;
     pub const REG_RX_FILTR_CFG: u32 = 0x1400;
 
-    pub const USB_DMA_CFG_TX_BULK_EN: u32 = 1 << 23;
+    pub const USB_DMA_CFG_RX_DROP_OR_PAD: u32 = 1 << 18;
+    pub const USB_DMA_CFG_RX_BULK_AGG_EN: u32 = 1 << 21;
     pub const USB_DMA_CFG_RX_BULK_EN: u32 = 1 << 22;
-    pub const USB_DMA_CFG_RX_DROP_OR_PAD: u32 = 1 << 25;
+    pub const USB_DMA_CFG_TX_BULK_EN: u32 = 1 << 23;
+    pub const USB_DMA_CFG_RX_BUSY: u32 = 1 << 30;
+    pub const USB_DMA_CFG_TX_BUSY: u32 = 1 << 31;
+
+    pub const TXD_INFO_80211: u32 = 1 << 19;
+    pub const TXD_INFO_WIV: u32 = 1 << 24;
+    pub const TXD_INFO_QSEL_MGMT: u32 = 0 << 25;
+    pub const TXD_INFO_QSEL_EDCA: u32 = 2 << 25;
+
+    pub const RXINFO_CRCERR: u32 = 1 << 8;
+    pub const RXINFO_ICVERR: u32 = 1 << 9;
+    pub const RXINFO_MICERR: u32 = 1 << 10;
+    pub const RXINFO_L2PAD: u32 = 1 << 14;
+    pub const RXINFO_AMPDU: u32 = 1 << 15;
 
     pub const MAC_SYS_CTRL_RESET_CSR: u32 = 1 << 0;
     pub const MAC_SYS_CTRL_RESET_BBP: u32 = 1 << 1;
@@ -283,7 +298,7 @@ impl Mt7612uCodec {
     pub const MAC_SYS_CTRL_ENABLE_RX: u32 = 1 << 3;
 
     pub const MCU_MSG_TYPE_CMD: u32 = 1 << 30;
-    pub const MCU_MSG_PORT_CPU_TX: u32 = 0 << 27;
+    pub const MCU_MSG_PORT_CPU_TX: u32 = 2 << 27;
 
     pub const VEND_DEV_MODE_RESET: u16 = 0x01;
     pub const VEND_DEV_MODE_RESET_IVB: u16 = 0x12;
@@ -305,26 +320,93 @@ impl Mt7612uCodec {
     pub const EP_IN_RX_DATA: u8 = 0x84;
     pub const EP_IN_RX_CMD: u8 = 0x85;
 
-    const RX_MAGIC_TAG: u16 = 0x7612;
+    /// Computes the IEEE 802.11 MAC header length (without FCS) for `mpdu`.
+    pub fn ieee80211_hdr_len(mpdu: &[u8]) -> Option<usize> {
+        if mpdu.len() < 2 {
+            return None;
+        }
+        let fc = u16::from_le_bytes([mpdu[0], mpdu[1]]);
+        let ftype = (fc >> 2) & 0x03;
+        let subtype = (fc >> 4) & 0x0f;
+        let len = match ftype {
+            // Management
+            0 => {
+                if fc & 0x8000 != 0 {
+                    28
+                } else {
+                    24
+                }
+            }
+            // Control
+            1 => match subtype {
+                0x08..=0x0b => 16, // RTS, PS-Poll, BAR, BA
+                0x0c | 0x0d => 10, // CTS, ACK
+                _ => 16,
+            },
+            // Data
+            2 => {
+                let mut l = if (fc & 0x0300) == 0x0300 { 30 } else { 24 };
+                if subtype & 0x08 != 0 {
+                    l += 2;
+                    if fc & 0x8000 != 0 {
+                        l += 4;
+                    }
+                }
+                l
+            }
+            _ => return None,
+        };
+        (mpdu.len() >= len).then_some(len)
+    }
 
-    /// Encodes a simulated or hardware RX packet (`RX_DMA_INFO + RXWI + 802.11 MPDU`).
+    fn encode_tx_rate(rate: TxRate) -> u16 {
+        const PHY_OFDM: u16 = 1 << 13;
+        const PHY_HT: u16 = 2 << 13;
+        match rate {
+            TxRate::Legacy(half_mbps) => {
+                let idx = match half_mbps {
+                    12 => 0,
+                    18 => 1,
+                    24 => 2,
+                    36 => 3,
+                    48 => 4,
+                    72 => 5,
+                    96 => 6,
+                    108 => 7,
+                    _ => 0,
+                };
+                PHY_OFDM | idx
+            }
+            TxRate::Ht { mcs, sgi } => {
+                PHY_HT | u16::from(mcs & 0x3f) | if sgi { 1 << 9 } else { 0 }
+            }
+        }
+    }
+
+    /// Encodes a simulated or hardware RX packet (`RX_DMA_INFO (4B) + mt76x02_rxwi (32B) + 802.11 MPDU`).
     pub fn encode_rx_packet(mpdu: &[u8], rssi_dbm: i8) -> Vec<u8> {
-        let rx_total = u16::try_from(Self::RXWI_LEN + mpdu.len()).unwrap_or(u16::MAX);
-        let dma_info = u32::from(rx_total) | (u32::from(Self::RX_MAGIC_TAG) << 16);
+        let padded_payload_len = (mpdu.len() + 3) & !3;
+        let rx_total = u16::try_from(Self::RXWI_LEN + padded_payload_len).unwrap_or(u16::MAX);
+        let dma_info = u32::from(rx_total);
 
         let mut rxwi = [0u8; Self::RXWI_LEN];
-        // w1[27:16] carries exact MPDU byte length in MT76x2 RXWI.
-        let mpdu_len = u16::try_from(mpdu.len()).unwrap_or(u16::MAX) & 0x0fff;
-        let w1 = u32::from(mpdu_len) << 16;
-        rxwi[4..8].copy_from_slice(&w1.to_le_bytes());
-        // w2[7:0] carries RSSI0 signed dBm.
-        rxwi[8] = rssi_dbm as u8;
-        rxwi[9] = rssi_dbm as u8;
+        // ctl[29:16] carries exact unpadded MPDU byte length in MT76x02 RXWI.
+        let mpdu_len = u16::try_from(mpdu.len()).unwrap_or(u16::MAX) & 0x3fff;
+        let ctl = u32::from(mpdu_len) << 16;
+        rxwi[4..8].copy_from_slice(&ctl.to_le_bytes());
+        // rssi[0..2] (offset 12..14 of struct mt76x02_rxwi) carries signed RSSI.
+        rxwi[12] = rssi_dbm as u8;
+        rxwi[13] = rssi_dbm as u8;
 
-        let mut out = Vec::with_capacity(Self::RX_DMA_INFO_LEN + Self::RXWI_LEN + mpdu.len());
+        let mut out =
+            Vec::with_capacity(Self::RX_DMA_INFO_LEN + Self::RXWI_LEN + padded_payload_len);
         out.extend_from_slice(&dma_info.to_le_bytes());
         out.extend_from_slice(&rxwi);
         out.extend_from_slice(mpdu);
+        out.resize(
+            Self::RX_DMA_INFO_LEN + Self::RXWI_LEN + padded_payload_len,
+            0,
+        );
         out
     }
 
@@ -410,7 +492,7 @@ impl Mt7612uCodec {
         let padded_len = (payload.len() + 3) & !3;
         let tx_info = Self::MCU_MSG_TYPE_CMD
             | Self::MCU_MSG_PORT_CPU_TX
-            | (u32::from(cmd & 0x1f) << 20)
+            | (u32::from(cmd & 0x7f) << 20)
             | (u32::from(seq & 0x0f) << 16)
             | (u32::try_from(padded_len).unwrap_or(0xffff) & 0xffff);
         let mut out = Vec::with_capacity(4 + padded_len + 4);
@@ -506,28 +588,40 @@ impl RadioWire for Mt7612uCodec {
     }
 
     fn encapsulate_tx(&self, frame: &Frame) -> Vec<u8> {
-        let raw_len = Self::TXWI_LEN + frame.bytes.len();
-        let padded_len = (raw_len + 3) & !3;
-        // MT_TXD_INFO: bits[15:0]=len, bit 27=WIV (802.11 TXWI inline).
-        let dma_info: u32 = (u32::try_from(padded_len).unwrap_or(0xffff) & 0xffff) | (1 << 27);
+        let hdr_len = Self::ieee80211_hdr_len(&frame.bytes).unwrap_or(frame.bytes.len());
+        let l2_pad = if !hdr_len.is_multiple_of(4) {
+            2usize
+        } else {
+            0usize
+        };
+        let padded_mpdu_len = frame.bytes.len() + l2_pad;
+        let xfer_len = (Self::TXWI_LEN + padded_mpdu_len + 3) & !3;
+        let dma_info = (u32::try_from(xfer_len).unwrap_or(0xffff) & 0xffff)
+            | Self::TXD_INFO_WIV
+            | Self::TXD_INFO_80211
+            | Self::TXD_INFO_QSEL_EDCA;
 
         let mut txwi = [0u8; Self::TXWI_LEN];
-        let mut flags: u16 = if frame.is_action() { 0x0010 } else { 0x0000 };
-        if !frame.no_ack {
-            flags |= 0x0001; // MT_TXWI_FLAGS_ACK
+        let rate_val = Self::encode_tx_rate(frame.rate);
+        txwi[2..4].copy_from_slice(&rate_val.to_le_bytes());
+        if !frame.no_ack && !frame.to.is_multicast() {
+            txwi[4] = 0x01; // MT_TXWI_ACK_CTL_REQ
         }
-        // PHY mode bits: OFDM (1 << 14) on 5 GHz / action; MCS encoded in bits [6:0].
-        txwi[0..2].copy_from_slice(&0x4000u16.to_le_bytes());
-        txwi[2..4].copy_from_slice(&flags.to_le_bytes());
-        let mpdu_len = u16::try_from(frame.bytes.len()).unwrap_or(u16::MAX) & 0x0fff;
-        let w2 = u32::from(mpdu_len) << 16;
-        txwi[8..12].copy_from_slice(&w2.to_le_bytes());
+        txwi[5] = 0xff; // global WCID
+        let mpdu_len = u16::try_from(frame.bytes.len()).unwrap_or(u16::MAX);
+        txwi[6..8].copy_from_slice(&mpdu_len.to_le_bytes());
+        txwi[17] = 0x13; // MT76XX_REV_E4 / 2-stream TX
+        txwi[19] = 0x80 | ((rate_val & 0x1f) as u8); // MT_PACKET_ID_HAS_RATE
 
-        let total = Self::TX_DMA_INFO_LEN + padded_len + Self::TX_TRAILER_LEN;
+        let total = Self::TX_DMA_INFO_LEN + xfer_len + Self::TX_TRAILER_LEN;
         let mut out = Vec::with_capacity(total);
         out.extend_from_slice(&dma_info.to_le_bytes());
         out.extend_from_slice(&txwi);
-        out.extend_from_slice(&frame.bytes);
+        out.extend_from_slice(&frame.bytes[..hdr_len]);
+        if l2_pad == 2 {
+            out.extend_from_slice(&[0u8, 0u8]);
+        }
+        out.extend_from_slice(&frame.bytes[hdr_len..]);
         out.resize(total, 0);
         out
     }
@@ -538,22 +632,34 @@ impl RadioWire for Mt7612uCodec {
             return None;
         }
         let dma_info = u32::from_le_bytes(usb_packet[0..4].try_into().ok()?);
-        let padded_len = (dma_info & 0xffff) as usize;
-        if dma_info & (1 << 27) == 0
-            || padded_len < Self::TXWI_LEN
-            || !padded_len.is_multiple_of(4)
-            || Self::TX_DMA_INFO_LEN + padded_len + Self::TX_TRAILER_LEN != usb_packet.len()
+        let xfer_len = (dma_info & 0xffff) as usize;
+        if (dma_info & (Self::TXD_INFO_WIV | Self::TXD_INFO_80211))
+            != (Self::TXD_INFO_WIV | Self::TXD_INFO_80211)
+            || xfer_len < Self::TXWI_LEN
+            || !xfer_len.is_multiple_of(4)
+            || Self::TX_DMA_INFO_LEN + xfer_len + Self::TX_TRAILER_LEN != usb_packet.len()
         {
             return None;
         }
         let txwi = &usb_packet[Self::TX_DMA_INFO_LEN..Self::TX_DMA_INFO_LEN + Self::TXWI_LEN];
-        let w2 = u32::from_le_bytes(txwi[8..12].try_into().ok()?);
-        let mpdu_len = ((w2 >> 16) & 0x0fff) as usize;
-        let mpdu_start = Self::TX_DMA_INFO_LEN + Self::TXWI_LEN;
-        if mpdu_len < 10 || mpdu_len > padded_len - Self::TXWI_LEN {
+        let mpdu_len = u16::from_le_bytes(txwi[6..8].try_into().ok()?) as usize;
+        let payload =
+            &usb_packet[Self::TX_DMA_INFO_LEN + Self::TXWI_LEN..Self::TX_DMA_INFO_LEN + xfer_len];
+        if mpdu_len < 10 || mpdu_len > payload.len() {
             return None;
         }
-        Some(usb_packet[mpdu_start..mpdu_start + mpdu_len].to_vec())
+        let hdr_len = Self::ieee80211_hdr_len(payload).unwrap_or(mpdu_len);
+        if !hdr_len.is_multiple_of(4) {
+            if mpdu_len + 2 > payload.len() {
+                return None;
+            }
+            let mut mpdu = Vec::with_capacity(mpdu_len);
+            mpdu.extend_from_slice(&payload[..hdr_len]);
+            mpdu.extend_from_slice(&payload[hdr_len + 2..mpdu_len + 2]);
+            Some(mpdu)
+        } else {
+            Some(payload[..mpdu_len].to_vec())
+        }
     }
 
     fn decapsulate_rx(&self, usb_packet: &[u8]) -> Option<(Option<i8>, Vec<u8>)> {
@@ -561,19 +667,39 @@ impl RadioWire for Mt7612uCodec {
         if usb_packet.len() < min_len {
             return None;
         }
-        let dma_info = u32::from_le_bytes(usb_packet[0..4].try_into().ok()?);
-        let tag = ((dma_info >> 16) & 0xffff) as u16;
-        if tag != Self::RX_MAGIC_TAG && tag != 0 {
+        let dma_len = u16::from_le_bytes(usb_packet[0..2].try_into().ok()?) as usize;
+        if dma_len < Self::RXWI_LEN
+            || !dma_len.is_multiple_of(4)
+            || Self::RX_DMA_INFO_LEN + dma_len > usb_packet.len()
+        {
             return None;
         }
-        let rxwi = &usb_packet[4..28];
-        let w1 = u32::from_le_bytes(rxwi[4..8].try_into().ok()?);
-        let mpdu_len = ((w1 >> 16) & 0x0fff) as usize;
-        if mpdu_len < 10 || min_len + mpdu_len > usb_packet.len() {
+        let rxwi = &usb_packet[Self::RX_DMA_INFO_LEN..Self::RX_DMA_INFO_LEN + Self::RXWI_LEN];
+        let rxinfo = u32::from_le_bytes(rxwi[0..4].try_into().ok()?);
+        if rxinfo & (Self::RXINFO_CRCERR | Self::RXINFO_ICVERR | Self::RXINFO_MICERR) != 0 {
             return None;
         }
-        let rssi = rxwi[8] as i8;
-        Some((Some(rssi), usb_packet[min_len..min_len + mpdu_len].to_vec()))
+        let ctl = u32::from_le_bytes(rxwi[4..8].try_into().ok()?);
+        let mpdu_len = ((ctl >> 16) & 0x3fff) as usize;
+        let payload =
+            &usb_packet[Self::RX_DMA_INFO_LEN + Self::RXWI_LEN..Self::RX_DMA_INFO_LEN + dma_len];
+        let rssi = rxwi[12] as i8;
+        let mpdu = if rxinfo & Self::RXINFO_L2PAD != 0 {
+            let hdr_len = Self::ieee80211_hdr_len(payload)?;
+            if mpdu_len < hdr_len || mpdu_len + 2 > payload.len() {
+                return None;
+            }
+            let mut out = Vec::with_capacity(mpdu_len);
+            out.extend_from_slice(&payload[..hdr_len]);
+            out.extend_from_slice(&payload[hdr_len + 2..mpdu_len + 2]);
+            out
+        } else {
+            if mpdu_len < 10 || mpdu_len > payload.len() {
+                return None;
+            }
+            payload[..mpdu_len].to_vec()
+        };
+        Some((Some(rssi), mpdu))
     }
 }
 
@@ -734,7 +860,7 @@ pub mod nusb_transport {
     //! Safe-Rust `nusb` bulk/control transport handle for detected AR9271 / MT7612U dongles.
 
     use std::io;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use nusb::MaybeFuture;
     use nusb::descriptors::TransferType;
@@ -772,7 +898,7 @@ pub mod nusb_transport {
         pub fn open(dongle: &DetectedDongle) -> io::Result<Self> {
             let info = nusb::list_devices()
                 .wait()
-                .map_err(io::Error::other)?
+                .map_err(|e| io::Error::other(format!("list_devices: {e}")))?
                 .find(|d| {
                     d.vendor_id() == dongle.vendor_id
                         && d.product_id() == dongle.product_id
@@ -786,7 +912,10 @@ pub mod nusb_transport {
                     )
                 })?;
 
-            let device = info.open().wait().map_err(io::Error::other)?;
+            let device = info
+                .open()
+                .wait()
+                .map_err(|e| io::Error::other(format!("device.open: {e}")))?;
             Self::from_device(dongle.kind, device)
         }
 
@@ -827,7 +956,9 @@ pub mod nusb_transport {
             let interface = device
                 .claim_interface(interface_number)
                 .wait()
-                .map_err(io::Error::other)?;
+                .map_err(|e| {
+                    io::Error::other(format!("claim_interface({interface_number}): {e}"))
+                })?;
 
             Ok(Self {
                 kind,
@@ -904,7 +1035,280 @@ pub mod nusb_transport {
             self.control_out(&super::Mt7612uCodec::vendor_write_reg(addr, val), timeout)
         }
 
-        fn upload_mt7612u_chunk(
+        /// Issues a synchronous USB Class OUT control transfer (`ControlType::Class`).
+        pub fn control_class_out(
+            &self,
+            request: u8,
+            value: u16,
+            index: u16,
+            data: &[u8],
+            timeout: Duration,
+        ) -> io::Result<()> {
+            self.interface
+                .control_out(
+                    ControlOut {
+                        control_type: ControlType::Class,
+                        recipient: Recipient::Device,
+                        request,
+                        value,
+                        index,
+                        data,
+                    },
+                    timeout,
+                )
+                .wait()
+                .map_err(io::Error::other)?;
+            Ok(())
+        }
+
+        /// Reads a 32-bit little-endian configuration register (`VEND_READ_CFG`).
+        pub fn read_cfg_u32(&self, addr: u32, timeout: Duration) -> io::Result<u32> {
+            let bytes = self.control_in(&super::Mt7612uCodec::vendor_read_cfg(addr), timeout)?;
+            let raw: [u8; 4] = bytes.try_into().map_err(|v: Vec<u8>| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("expected 4-byte cfg read, got {}", v.len()),
+                )
+            })?;
+            Ok(u32::from_le_bytes(raw))
+        }
+
+        /// Writes a 32-bit little-endian configuration register (`VEND_WRITE_CFG`).
+        pub fn write_cfg_u32(&self, addr: u32, val: u32, timeout: Duration) -> io::Result<()> {
+            self.control_out(&super::Mt7612uCodec::vendor_write_cfg(addr, val), timeout)
+        }
+
+        /// Read-modify-writes a 32-bit configuration register and returns the new value.
+        pub fn rmw_cfg_u32(
+            &self,
+            addr: u32,
+            clear: u32,
+            set: u32,
+            timeout: Duration,
+        ) -> io::Result<u32> {
+            let next = (self.read_cfg_u32(addr, timeout)? & !clear) | set;
+            self.write_cfg_u32(addr, next, timeout)?;
+            Ok(next)
+        }
+
+        /// Read-modify-writes a 32-bit MAC/BBP register and returns the new value.
+        pub fn rmw_reg_u32(
+            &self,
+            addr: u32,
+            clear: u32,
+            set: u32,
+            timeout: Duration,
+        ) -> io::Result<u32> {
+            let next = (self.read_reg_u32(addr, timeout)? & !clear) | set;
+            self.write_reg_u32(addr, next, timeout)?;
+            Ok(next)
+        }
+
+        /// Polls a 32-bit MAC/BBP register until `(val & mask) == expected`.
+        pub fn poll_reg_u32(
+            &self,
+            addr: u32,
+            mask: u32,
+            expected: u32,
+            max_wait: Duration,
+        ) -> io::Result<u32> {
+            let deadline = Instant::now() + max_wait;
+            let per_io = Duration::from_millis(250);
+            loop {
+                let val = self.read_reg_u32(addr, per_io)?;
+                if (val & mask) == expected {
+                    return Ok(val);
+                }
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!(
+                            "reg 0x{addr:04x} poll timeout: val=0x{val:08x} mask=0x{mask:08x} want=0x{expected:08x}"
+                        ),
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        }
+
+        /// Polls a 32-bit configuration register until `(val & mask) == expected`.
+        pub fn poll_cfg_u32(
+            &self,
+            addr: u32,
+            mask: u32,
+            expected: u32,
+            max_wait: Duration,
+        ) -> io::Result<u32> {
+            let deadline = Instant::now() + max_wait;
+            let per_io = Duration::from_millis(250);
+            loop {
+                let val = self.read_cfg_u32(addr, per_io)?;
+                if (val & mask) == expected {
+                    return Ok(val);
+                }
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!(
+                            "cfg 0x{addr:04x} poll timeout: val=0x{val:08x} mask=0x{mask:08x} want=0x{expected:08x}"
+                        ),
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        }
+
+        /// Reads the 512-byte MT7612U EEPROM via eFuse (`0x0024..0x0034`), falling back to `VEND_READ_EEPROM`.
+        pub fn read_eeprom_512(&self, timeout: Duration) -> io::Result<[u8; 512]> {
+            const REG_EFUSE_CTRL: u32 = 0x0024;
+            const REG_EFUSE_DATA_BASE: u32 = 0x0028;
+            const EFUSE_AIN_AND_MODE_MASK: u32 = (0x3ff << 16) | (0x03 << 6);
+            const EFUSE_KICK: u32 = 1 << 30;
+
+            let valid_id = |buf: &[u8; 512]| {
+                let chip_id = u16::from_le_bytes([buf[0], buf[1]]);
+                let pci_id = u16::from_le_bytes([buf[0x0a], buf[0x0b]]);
+                matches!(chip_id, 0x7612 | 0x7662 | 0x7632)
+                    || matches!(pci_id, 0x7612 | 0x7662 | 0x7632)
+            };
+
+            let mut efuse = [0u8; 512];
+            let mut efuse_ok = true;
+            for base in (0..512usize).step_by(16) {
+                let ain = ((base as u32) & !0x0f) << 16;
+                if self
+                    .rmw_reg_u32(
+                        REG_EFUSE_CTRL,
+                        EFUSE_AIN_AND_MODE_MASK,
+                        ain | EFUSE_KICK,
+                        timeout,
+                    )
+                    .is_err()
+                    || self
+                        .poll_reg_u32(REG_EFUSE_CTRL, EFUSE_KICK, 0, Duration::from_millis(500))
+                        .is_err()
+                {
+                    efuse_ok = false;
+                    break;
+                }
+                std::thread::sleep(Duration::from_micros(50));
+                let ctrl = self.read_reg_u32(REG_EFUSE_CTRL, timeout)?;
+                if (ctrl & 0x3f) == 0x3f {
+                    efuse[base..base + 16].fill(0xff);
+                } else {
+                    for word in 0..4usize {
+                        let val =
+                            self.read_reg_u32(REG_EFUSE_DATA_BASE + ((word as u32) << 2), timeout)?;
+                        efuse[base + word * 4..base + word * 4 + 4]
+                            .copy_from_slice(&val.to_le_bytes());
+                    }
+                }
+            }
+            if efuse_ok && valid_id(&efuse) {
+                return Ok(efuse);
+            }
+
+            let mut vend = [0u8; 512];
+            for offset in (0..512usize).step_by(4) {
+                let bytes = self.control_in(
+                    &super::VendorCtrlTransfer {
+                        request_type: 0xc0,
+                        request: super::Mt7612uCodec::VEND_READ_EEPROM,
+                        value: 0,
+                        index: offset as u16,
+                        data: vec![0u8; 4],
+                    },
+                    timeout,
+                )?;
+                let raw: [u8; 4] = bytes.try_into().map_err(|v: Vec<u8>| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "expected 4-byte EEPROM read at 0x{offset:03x}, got {}",
+                            v.len()
+                        ),
+                    )
+                })?;
+                vend[offset..offset + 4].copy_from_slice(&raw);
+            }
+            if valid_id(&vend) || !efuse_ok {
+                Ok(vend)
+            } else {
+                Ok(efuse)
+            }
+        }
+
+        /// Sends an inband MCU command over EP `0x08` and optionally waits for `EVT_CMD_DONE` on EP `0x85`.
+        pub fn send_mcu_cmd(
+            &self,
+            cmd: u8,
+            seq: u8,
+            payload: &[u8],
+            wait_resp: bool,
+            timeout: Duration,
+        ) -> io::Result<()> {
+            let seq4 = if seq & 0x0f == 0 { 1 } else { seq & 0x0f };
+            let packet = super::Mt7612uCodec::encode_mcu_cmd(cmd, seq4, payload);
+            self.send_cmd(&packet, timeout)?;
+            if !wait_resp {
+                return Ok(());
+            }
+
+            let mut timeouts = 0usize;
+            for _ in 0..8usize {
+                match self.recv_cmd(512, Duration::from_millis(300)) {
+                    Ok(buf) => {
+                        if buf.len() < 4 {
+                            continue;
+                        }
+                        let rxfce = u32::from_le_bytes(buf[0..4].try_into().unwrap());
+                        let evt_seq = ((rxfce >> 16) & 0x0f) as u8;
+                        let evt_type = (rxfce >> 20) & 0x0f;
+                        if evt_seq == seq4 && evt_type == 0 {
+                            return Ok(());
+                        }
+                    }
+                    Err(err)
+                        if matches!(
+                            err.kind(),
+                            io::ErrorKind::TimedOut
+                                | io::ErrorKind::Interrupted
+                                | io::ErrorKind::WouldBlock
+                        ) =>
+                    {
+                        timeouts += 1;
+                        if timeouts >= 5 {
+                            return Err(io::Error::new(
+                                io::ErrorKind::TimedOut,
+                                format!("MCU cmd 0x{cmd:02x} seq {seq4} response timed out"),
+                            ));
+                        }
+                    }
+                    Err(err) => return Err(err),
+                }
+            }
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("MCU cmd 0x{cmd:02x} seq {seq4} did not receive EVT_CMD_DONE"),
+            ))
+        }
+
+        /// Opens owned Bulk OUT and Bulk IN endpoints for dedicated TX and continuous RX streaming.
+        pub fn open_data_endpoints(
+            &self,
+        ) -> io::Result<(nusb::Endpoint<Bulk, Out>, nusb::Endpoint<Bulk, In>)> {
+            let out_ep = self
+                .interface
+                .endpoint::<Bulk, Out>(self.bulk_out_ep)
+                .map_err(io::Error::other)?;
+            let in_ep = self
+                .interface
+                .endpoint::<Bulk, In>(self.bulk_in_ep)
+                .map_err(io::Error::other)?;
+            Ok((out_ep, in_ep))
+        }
+
+        pub(crate) fn upload_mt7612u_chunk(
             &self,
             chunk: &super::Mt7612uFwChunk,
             timeout: Duration,
