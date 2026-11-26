@@ -1,0 +1,79 @@
+{
+  "owly": "0.4.3",
+  "time": 1795026363,
+  "kernel": "7.3.4-arch1-2",
+  "os": "Arch Linux",
+  "machine": "LENOVO Legion Pro 7 16IAX10H",
+  "driver": "iwlwifi",
+  "device": "8086:272b",
+  "status": "tested",
+  "mode": "exclusive",
+  "channel": 6,
+  "transfers": "owly",
+  "steps": [
+    {
+      "step": "probe",
+      "result": "pass",
+      "detail": "ready"
+    },
+    {
+      "step": "NetworkManager",
+      "result": "pass",
+      "detail": "leaves Owly's interfaces alone"
+    },
+    {
+      "step": "baseline",
+      "result": "pass",
+      "detail": "10/10 replies"
+    },
+    {
+      "step": "start",
+      "result": "pass",
+      "ms": 644
+    },
+    {
+      "step": "phone heard",
+      "result": "pass"
+    },
+    {
+      "step": "shown on the phone",
+      "result": "pass"
+    },
+    {
+      "step": "phone -> computer",
+      "result": "pass"
+    },
+    {
+      "step": "computer -> phone",
+      "result": "pass",
+      "ms": 3851
+    },
+    {
+      "step": "stop",
+      "result": "pass",
+      "ms": 5682
+    },
+    {
+      "step": "Wi-Fi after teardown",
+      "result": "pass",
+      "detail": "60/60 replies, longest gap 0 s"
+    }
+  ],
+  "wifi": {
+    "baseline": {
+      "sent": 10,
+      "received": 10,
+      "longest_gap_s": 0
+    },
+    "window": {
+      "sent": 0,
+      "received": 0,
+      "longest_gap_s": 0
+    },
+    "after": {
+      "sent": 60,
+      "received": 60,
+      "longest_gap_s": 0
+    }
+  }
+}
