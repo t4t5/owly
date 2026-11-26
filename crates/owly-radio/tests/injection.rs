@@ -362,7 +362,7 @@ struct Fx {
     dir: tempfile::TempDir,
     ops: Arc<FakeOps>,
     /// What AWDL was last started with, and whether it still runs.
-    awdl: Arc<Mutex<Option<(owly_awdl::Config, bool)>>>,
+    awdl: Arc<Mutex<Option<(owly_awdl::Config, owly_radio::native::Options, bool)>>>,
 }
 
 /// AWDL as the backend runs it: makes `awdl0` and hears the phone, until
@@ -370,7 +370,7 @@ struct Fx {
 /// `<dir>/awdl.fail`, it fails a moment after starting.
 struct StandIn {
     dir: PathBuf,
-    started: Arc<Mutex<Option<(owly_awdl::Config, bool)>>>,
+    started: Arc<Mutex<Option<(owly_awdl::Config, owly_radio::native::Options, bool)>>>,
     failed: watch::Receiver<Option<String>>,
 }
 
@@ -383,7 +383,7 @@ impl Awdl for StandIn {
     }
     fn stop(self: Box<Self>) {
         let _ = std::fs::remove_file(self.dir.join("awdl0"));
-        if let Some((_, running)) = &mut *self.started.lock().unwrap() {
+        if let Some((_, _, running)) = &mut *self.started.lock().unwrap() {
             *running = false;
         }
     }
@@ -446,9 +446,9 @@ impl Fx {
     fn backend_with(&self, settings: Settings) -> Injection {
         let dir = self.dir.path().to_path_buf();
         let started = self.awdl.clone();
-        let start: StartAwdl = Arc::new(move |monitor, tap, cfg, peers| {
+        let start: StartAwdl = Arc::new(move |monitor, tap, cfg, opts, peers| {
             assert_eq!((monitor, tap), (MONITOR, "awdl0"));
-            *started.lock().unwrap() = Some((cfg, true));
+            *started.lock().unwrap() = Some((cfg, opts, true));
             std::fs::write(dir.join("awdl0"), "").unwrap();
             let phone = PeerInfo {
                 mac: PHONE.parse().unwrap(),
@@ -482,8 +482,16 @@ impl Fx {
         self.awdl.lock().unwrap().clone().expect("AWDL started").0
     }
 
+    fn native_opts(&self) -> owly_radio::native::Options {
+        self.awdl.lock().unwrap().clone().expect("AWDL started").1
+    }
+
     fn awdl_running(&self) -> bool {
-        self.awdl.lock().unwrap().as_ref().is_some_and(|(_, r)| *r)
+        self.awdl
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|(_, _, r)| *r)
     }
 
     /// The calls made since `from`.
@@ -901,7 +909,9 @@ async fn exclusive_mode_runs_a_hidden_ap_without_ad_hoc_mode() {
     let link = backend.up().await.unwrap();
     // 44 failed; 149 started.
     assert_eq!(fx.awdl().radio.channel.0, 149);
+    assert_eq!(fx.native_opts(), owly_radio::native::Options::default());
     let conf = std::fs::read_to_string(fx.dir.path().join("hostapd.conf.149")).unwrap();
+    assert!(!conf.contains("basic_rates="), "{conf}");
     for line in [
         "interface=owlyap0",
         "ignore_broadcast_ssid=1",
@@ -1209,5 +1219,62 @@ fn a_dead_holders_process_is_stopped_by_its_step() {
     rt.block_on(fx.backend().recover()).unwrap();
     reaper.join().unwrap().unwrap();
     assert!(!process.alive());
+    assert_eq!(fx.journal(), None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mt7921e_exclusive_hidden_ap_enables_pae_and_peer_sta() {
+    // MT7921/MT7922 without IBSS and without active-monitor support (#14, #124).
+    let fx = Fx::with(|o| {
+        o.driver = "mt7921e".into();
+        o.device = Some("14c3:0616".into());
+        let mut w = o.wiphy.lock().unwrap();
+        w.iftypes.retain(|t| *t != IfType::Adhoc);
+        w.active_monitor = false;
+    });
+    let mut settings = fx.settings();
+    settings.allow_untested = true;
+    let mut backend = fx.backend_with(settings);
+
+    let caps = backend.probe();
+    assert_eq!(caps.missing, [], "{caps:?}");
+    assert_eq!(caps.mode, Some(Mode::Exclusive));
+    assert_eq!(caps.channel, Some(44));
+
+    let link = backend.up().await.unwrap();
+    assert_eq!(fx.awdl().radio.channel.0, 44);
+    assert!(fx.awdl().no_ack);
+    assert_eq!(
+        fx.native_opts(),
+        owly_radio::native::Options {
+            tx_pae_fixrate: true,
+            peer_sta_iface: Some(AP.to_string()),
+        }
+    );
+
+    let conf = std::fs::read_to_string(fx.dir.path().join("hostapd.conf.44")).unwrap();
+    for line in [
+        "interface=owlyap0",
+        "hw_mode=a",
+        "channel=44",
+        "wmm_enabled=1",
+        "supported_rates=60 90 120 180 240 360 480 540",
+        "basic_rates=240",
+    ] {
+        assert!(conf.lines().any(|l| l == line), "{line} in {conf}");
+    }
+    let calls = fx.ops.calls();
+    assert!(calls.contains(&"write /debug/phy0/mt76/runtime-pm 0".to_string()));
+    assert!(calls.contains(&"write /debug/phy0/mt76/deep-sleep 0".to_string()));
+    assert!(calls.contains(&format!("add phy0 {AP} AP")));
+    assert!(calls.contains(&format!("add phy0 {MONITOR} monitor")));
+
+    backend.down().await.unwrap();
+    let after = fx.since(calls.len());
+    assert!(after.contains(&format!("del {MONITOR}")));
+    assert!(after.contains(&format!("del {AP}")));
+    assert!(after.contains(&"write /debug/phy0/mt76/runtime-pm 1".to_string()));
+    assert!(after.contains(&"write /debug/phy0/mt76/deep-sleep 1".to_string()));
+    assert_eq!(*link.state.borrow(), LinkState::Up);
     assert_eq!(fx.journal(), None);
 }

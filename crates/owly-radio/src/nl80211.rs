@@ -17,6 +17,8 @@ const CMD_GET_INTERFACE: u8 = 5;
 const CMD_SET_INTERFACE: u8 = 6;
 const CMD_NEW_INTERFACE: u8 = 7;
 const CMD_DEL_INTERFACE: u8 = 8;
+const CMD_NEW_STATION: u8 = 19;
+const CMD_DEL_STATION: u8 = 20;
 const CMD_REQ_SET_REG: u8 = 27;
 const CMD_GET_REG: u8 = 31;
 const CMD_JOIN_IBSS: u8 = 43;
@@ -30,19 +32,26 @@ const ATTR_IFNAME: u16 = 4;
 const ATTR_IFTYPE: u16 = 5;
 const ATTR_MAC: u16 = 6;
 const ATTR_BEACON_INTERVAL: u16 = 12;
+const ATTR_STA_AID: u16 = 16;
+const ATTR_STA_LISTEN_INTERVAL: u16 = 18;
+const ATTR_STA_SUPPORTED_RATES: u16 = 19;
 const ATTR_WIPHY_BANDS: u16 = 22;
 const ATTR_MNTR_FLAGS: u16 = 23;
+const ATTR_HT_CAPABILITY: u16 = 31;
 const ATTR_SUPPORTED_IFTYPES: u16 = 32;
 const ATTR_REG_ALPHA2: u16 = 33;
 const ATTR_WIPHY_FREQ: u16 = 38;
 const ATTR_WIPHY_CHANNEL_TYPE: u16 = 39;
 const ATTR_SSID: u16 = 52;
 const ATTR_FREQ_FIXED: u16 = 60;
+const ATTR_STA_FLAGS2: u16 = 67;
 const ATTR_INTERFACE_COMBINATIONS: u16 = 120;
 const ATTR_SOFTWARE_IFTYPES: u16 = 121;
 const ATTR_FEATURE_FLAGS: u16 = 143;
+const ATTR_STA_CAPABILITY: u16 = 171;
 const ATTR_SPLIT_WIPHY_DUMP: u16 = 174;
 const ATTR_WIPHY_SELF_MANAGED_REG: u16 = 216;
+const ATTR_STA_SUPPORT_P2P_PS: u16 = 228;
 const ATTR_MLO_LINKS: u16 = 312;
 
 const BAND_ATTR_FREQS: u16 = 1;
@@ -61,6 +70,19 @@ const MNTR_FLAG_OTHER_BSS: u16 = 4;
 const MNTR_FLAG_ACTIVE: u16 = 6;
 const CHAN_HT20: u32 = 1;
 const FEATURE_ACTIVE_MONITOR: u32 = 1 << 17;
+
+const STA_FLAG_AUTHORIZED: u32 = 1 << 1;
+const STA_FLAG_WME: u32 = 1 << 3;
+const STA_FLAG_AUTHENTICATED: u32 = 1 << 5;
+const STA_FLAG_ASSOCIATED: u32 = 1 << 7;
+
+/// Mandatory/standard OFDM rates (6..54 Mbit/s in 500 kbit/s units), valid on
+/// both 5 GHz and 2.4 GHz (ERP-OFDM).
+const PEER_STA_RATES: [u8; 8] = [12, 18, 24, 36, 48, 72, 96, 108];
+/// 26-byte `struct ieee80211_ht_cap` for HT20, 1 spatial stream (MCS 0-7).
+const PEER_STA_HT_CAP: [u8; 26] = [
+    0x8c, 0x01, 0x1b, 0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+];
 
 /// An interface type, as nl80211 numbers them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -468,6 +490,47 @@ impl Nl80211 {
         a.str(ATTR_REG_ALPHA2, alpha2);
         self.genl.request(CMD_REQ_SET_REG, 0, &a).map(drop)
     }
+
+    /// Registers an AWDL peer as an unauthorized station on a hidden AP
+    /// interface (`WME | AUTHENTICATED | ASSOCIATED`, with `AUTHORIZED`
+    /// strictly clear) so drivers such as `mt7921e` allocate a per-peer
+    /// hardware WCID while mac80211 continues blocking normal L2/L3 ingress.
+    pub fn add_peer_station(&mut self, ifindex: u32, mac: MacAddr, aid: u16) -> io::Result<()> {
+        let a = peer_station_add_attrs(ifindex, mac, aid);
+        self.genl.request(CMD_NEW_STATION, 0, &a).map(drop)
+    }
+
+    /// Removes a peer station from a hidden AP interface.
+    pub fn del_peer_station(&mut self, ifindex: u32, mac: MacAddr) -> io::Result<()> {
+        let a = peer_station_del_attrs(ifindex, mac);
+        self.genl.request(CMD_DEL_STATION, 0, &a).map(drop)
+    }
+}
+
+fn peer_station_add_attrs(ifindex: u32, mac: MacAddr, aid: u16) -> Attrs {
+    let mask = STA_FLAG_AUTHORIZED | STA_FLAG_WME | STA_FLAG_AUTHENTICATED | STA_FLAG_ASSOCIATED;
+    let set = STA_FLAG_WME | STA_FLAG_AUTHENTICATED | STA_FLAG_ASSOCIATED;
+    let mut flags2 = [0u8; 8];
+    flags2[..4].copy_from_slice(&mask.to_ne_bytes());
+    flags2[4..].copy_from_slice(&set.to_ne_bytes());
+
+    let mut a = Attrs::new();
+    a.u32(ATTR_IFINDEX, ifindex)
+        .bytes(ATTR_MAC, &mac.0)
+        .u16(ATTR_STA_AID, aid)
+        .u16(ATTR_STA_LISTEN_INTERVAL, 10)
+        .bytes(ATTR_STA_SUPPORTED_RATES, &PEER_STA_RATES)
+        .u16(ATTR_STA_CAPABILITY, 0x0401)
+        .bytes(ATTR_HT_CAPABILITY, &PEER_STA_HT_CAP)
+        .u8(ATTR_STA_SUPPORT_P2P_PS, 0)
+        .bytes(ATTR_STA_FLAGS2, &flags2);
+    a
+}
+
+fn peer_station_del_attrs(ifindex: u32, mac: MacAddr) -> Attrs {
+    let mut a = Attrs::new();
+    a.u32(ATTR_IFINDEX, ifindex).bytes(ATTR_MAC, &mac.0);
+    a
 }
 
 #[cfg(test)]
@@ -649,5 +712,50 @@ mod tests {
             assert!(!w.channels.is_empty(), "{w:?}");
         }
         assert!(nl.regdom().is_ok());
+    }
+
+    #[test]
+    fn peer_station_attrs_keep_authorized_clear() {
+        let mac = MacAddr([0x86, 0x08, 0x04, 0x8a, 0x2b, 0xf4]);
+        let add = peer_station_add_attrs(9, mac, 3);
+        assert_eq!(attr(&add.0, ATTR_IFINDEX).and_then(as_u32), Some(9));
+        assert_eq!(attr(&add.0, ATTR_MAC), Some(&mac.0[..]));
+        assert_eq!(
+            attr(&add.0, ATTR_STA_AID).and_then(crate::netlink::as_u16),
+            Some(3)
+        );
+        assert_eq!(
+            attr(&add.0, ATTR_STA_LISTEN_INTERVAL).and_then(crate::netlink::as_u16),
+            Some(10)
+        );
+        assert_eq!(
+            attr(&add.0, ATTR_STA_SUPPORTED_RATES),
+            Some(&PEER_STA_RATES[..])
+        );
+        assert_eq!(
+            attr(&add.0, ATTR_STA_CAPABILITY).and_then(crate::netlink::as_u16),
+            Some(0x0401)
+        );
+        let ht = attr(&add.0, ATTR_HT_CAPABILITY).unwrap();
+        assert_eq!(ht.len(), 26);
+        assert_eq!(&ht[..4], &[0x8c, 0x01, 0x1b, 0xff]);
+        assert_eq!(
+            attr(&add.0, ATTR_STA_SUPPORT_P2P_PS).and_then(crate::netlink::as_u8),
+            Some(0)
+        );
+        let flags2 = attr(&add.0, ATTR_STA_FLAGS2).unwrap();
+        assert_eq!(flags2.len(), 8);
+        let mask = u32::from_ne_bytes(flags2[..4].try_into().unwrap());
+        let set = u32::from_ne_bytes(flags2[4..8].try_into().unwrap());
+        assert_ne!(mask & STA_FLAG_AUTHORIZED, 0, "AUTHORIZED must be masked");
+        assert_eq!(set & STA_FLAG_AUTHORIZED, 0, "AUTHORIZED must stay clear");
+        assert_eq!(
+            set,
+            STA_FLAG_WME | STA_FLAG_AUTHENTICATED | STA_FLAG_ASSOCIATED
+        );
+
+        let del = peer_station_del_attrs(9, mac);
+        assert_eq!(attr(&del.0, ATTR_IFINDEX).and_then(as_u32), Some(9));
+        assert_eq!(attr(&del.0, ATTR_MAC), Some(&mac.0[..]));
     }
 }

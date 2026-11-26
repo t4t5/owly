@@ -20,6 +20,7 @@ use owly_awdl::{Config, Ipv6Packet};
 use tokio::io::unix::AsyncFd;
 use tokio::sync::watch;
 
+use crate::nl80211::Nl80211;
 use crate::radiotap;
 use crate::rtnl::Rtnl;
 
@@ -29,6 +30,23 @@ pub const TAP_MTU: u32 = 1450;
 pub const MONITOR_MTU: u32 = 8192;
 /// The most a radiotap header of ours takes.
 const RADIOTAP_MAX: usize = 16;
+/// `ETH_P_PAE` (IEEE 802.1X / EAPOL control-port protocol, `linux/if_ether.h`).
+const ETH_P_PAE: u16 = 0x888e;
+/// Most concurrent unauthorized peer STA entries on the hidden AP interface.
+const MAX_PEER_STAS: usize = 32;
+
+/// Linux-specific injection and AP peer-station options below `owly-awdl`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Options {
+    /// Tag monitor injections with `ETH_P_PAE` (`0x888e`) via `sendto` so
+    /// mac80211's control-port handler sets `IEEE80211_TX_CTL_USE_MINRATE`
+    /// (`MT_TXD2_FIX_RATE` on stock `mt7921e`).
+    pub tx_pae_fixrate: bool,
+    /// When set, register each valid AWDL peer as an unauthorized station
+    /// (`AUTHORIZED = 0`) on this hidden AP interface and remove it on peer
+    /// expiry and teardown.
+    pub peer_sta_iface: Option<String>,
+}
 
 /// A running node.
 pub struct Native {
@@ -46,6 +64,17 @@ impl Native {
         cfg: Config,
         peers: watch::Sender<Vec<PeerInfo>>,
     ) -> io::Result<Native> {
+        Native::start_with(monitor, tap, cfg, Options::default(), peers)
+    }
+
+    /// Starts a node with Linux-specific radio [`Options`].
+    pub fn start_with(
+        monitor: &str,
+        tap: &str,
+        cfg: Config,
+        opts: Options,
+        peers: watch::Sender<Vec<PeerInfo>>,
+    ) -> io::Result<Native> {
         let monitor_index = if_index(monitor)?;
         let mut rtnl = Rtnl::open()?;
         if let Err(e) = rtnl.set_mtu(monitor_index, MONITOR_MTU) {
@@ -59,6 +88,8 @@ impl Native {
         cfg.max_frame = monitor_mtu.saturating_sub(RADIOTAP_MAX).max(1500);
 
         let air = packet_socket(monitor_index, false)?;
+        let tx_pae = opts.tx_pae_fixrate.then(|| pae_dest(monitor_index));
+        let peer_stas = opts.peer_sta_iface.as_deref().and_then(open_peer_stations);
         let tap_fd = open_tap(tap)?;
         let index = if_index(tap)?;
         // No address of the kernel's own beside ours.
@@ -76,6 +107,7 @@ impl Native {
             move || {
                 let monitor = Monitor {
                     fd: register(air)?,
+                    tx_pae,
                     buf: vec![0; 16 * 1024],
                 };
                 let tap = Tap {
@@ -83,6 +115,7 @@ impl Native {
                     name,
                     index,
                     rtnl,
+                    peer_stas,
                     buf: vec![0; 16 * 1024],
                 };
                 Ok((monitor, tap))
@@ -107,6 +140,8 @@ impl Native {
 /// The monitor interface's packet socket.
 struct Monitor {
     fd: AsyncFd<OwnedFd>,
+    /// When set, inject via `sendto` with `sll_protocol = htons(ETH_P_PAE)`.
+    tx_pae: Option<nix::libc::sockaddr_ll>,
     buf: Vec<u8>,
 }
 
@@ -138,9 +173,22 @@ impl Air for Monitor {
     fn send(&mut self, frame: Frame) -> Result<(), Frame> {
         let mut buf = radiotap::tx_header(frame.rate, frame.no_ack);
         buf.extend_from_slice(&frame.bytes);
-        match nix::unistd::write(self.fd.get_ref(), &buf) {
-            Ok(_) => Ok(()),
-            Err(nix::errno::Errno::EAGAIN | nix::errno::Errno::ENOBUFS) => Err(frame),
+        let sent = match &self.tx_pae {
+            Some(dest) => send_raw(self.fd.get_ref(), &buf, dest),
+            None => nix::unistd::write(self.fd.get_ref(), &buf)
+                .map(|_| ())
+                .map_err(io::Error::from),
+        };
+        match sent {
+            Ok(()) => Ok(()),
+            Err(e)
+                if matches!(
+                    e.raw_os_error(),
+                    Some(nix::libc::EAGAIN | nix::libc::ENOBUFS)
+                ) =>
+            {
+                Err(frame)
+            }
             Err(e) => {
                 tracing::debug!("couldn't inject a frame: {e}");
                 Ok(())
@@ -155,6 +203,7 @@ struct Tap {
     name: String,
     index: u32,
     rtnl: Rtnl,
+    peer_stas: Option<PeerStations>,
     buf: Vec<u8>,
 }
 
@@ -193,10 +242,16 @@ impl Netif for Tap {
         if let Err(e) = self.rtnl.add_neighbour(self.index, mac.link_local(), mac) {
             tracing::warn!("no neighbour entry for {mac}: {e}");
         }
+        if let Some(stas) = &mut self.peer_stas {
+            stas.add(mac);
+        }
     }
 
     fn peer_down(&mut self, mac: MacAddr) {
         let _ = self.rtnl.del_neighbour(self.index, mac.link_local());
+        if let Some(stas) = &mut self.peer_stas {
+            stas.remove(mac);
+        }
     }
 }
 
@@ -327,4 +382,236 @@ fn open_tap(name: &str) -> io::Result<OwnedFd> {
         tracing::info!("{name} keeps its offloads: {}", io::Error::last_os_error());
     }
     Ok(fd)
+}
+
+fn pae_dest(ifindex: u32) -> nix::libc::sockaddr_ll {
+    let mut addr = zeroed_sockaddr_ll();
+    addr.sll_family = nix::libc::AF_PACKET as u16;
+    addr.sll_protocol = ETH_P_PAE.to_be();
+    addr.sll_ifindex = ifindex as i32;
+    addr
+}
+
+fn send_raw(fd: &OwnedFd, buf: &[u8], dest: &nix::libc::sockaddr_ll) -> io::Result<()> {
+    #[allow(unsafe_code)]
+    // SAFETY: `buf` is valid for `buf.len()` bytes and `dest` is a valid
+    // `sockaddr_ll` for the duration of the syscall.
+    let r = unsafe {
+        nix::libc::sendto(
+            fd.as_raw_fd(),
+            buf.as_ptr().cast(),
+            buf.len(),
+            0,
+            (dest as *const nix::libc::sockaddr_ll).cast(),
+            size_of::<nix::libc::sockaddr_ll>() as nix::libc::socklen_t,
+        )
+    };
+    if r < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if r as usize != buf.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::WriteZero,
+            format!("short raw inject ({r}/{})", buf.len()),
+        ));
+    }
+    Ok(())
+}
+
+trait StationOps {
+    fn add(&mut self, ifindex: u32, mac: MacAddr, aid: u16) -> io::Result<()>;
+    fn del(&mut self, ifindex: u32, mac: MacAddr) -> io::Result<()>;
+}
+
+impl StationOps for Nl80211 {
+    fn add(&mut self, ifindex: u32, mac: MacAddr, aid: u16) -> io::Result<()> {
+        self.add_peer_station(ifindex, mac, aid)
+    }
+
+    fn del(&mut self, ifindex: u32, mac: MacAddr) -> io::Result<()> {
+        self.del_peer_station(ifindex, mac)
+    }
+}
+
+/// Bounded table of unauthorized peer stations registered on a hidden AP
+/// interface, with deterministic cleanup on drop.
+struct PeerStations<S: StationOps = Nl80211> {
+    ops: S,
+    ifindex: u32,
+    slots: [Option<MacAddr>; MAX_PEER_STAS],
+}
+
+fn open_peer_stations(iface: &str) -> Option<PeerStations> {
+    let ifindex = match if_index(iface) {
+        Ok(i) => i,
+        Err(e) => {
+            tracing::warn!("peer STA registration disabled on {iface}: {e}");
+            return None;
+        }
+    };
+    match Nl80211::open() {
+        Ok(nl) => Some(PeerStations::new(nl, ifindex)),
+        Err(e) => {
+            tracing::warn!("peer STA registration disabled on {iface}: {e}");
+            None
+        }
+    }
+}
+
+impl<S: StationOps> PeerStations<S> {
+    fn new(ops: S, ifindex: u32) -> Self {
+        PeerStations {
+            ops,
+            ifindex,
+            slots: [None; MAX_PEER_STAS],
+        }
+    }
+
+    fn add(&mut self, mac: MacAddr) {
+        let mut free = None;
+        for (i, slot) in self.slots.iter().enumerate() {
+            match slot {
+                Some(existing) if *existing == mac => return,
+                None if free.is_none() => free = Some(i),
+                _ => {}
+            }
+        }
+        let Some(slot) = free else {
+            tracing::warn!("peer STA table full ({MAX_PEER_STAS}); skipping {mac}");
+            return;
+        };
+        let aid = (slot + 1) as u16;
+        match self.ops.add(self.ifindex, mac, aid) {
+            Ok(()) => self.slots[slot] = Some(mac),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                self.slots[slot] = Some(mac);
+            }
+            Err(e) => tracing::warn!("couldn't add peer station {mac}: {e}"),
+        }
+    }
+
+    fn remove(&mut self, mac: MacAddr) {
+        for slot in &mut self.slots {
+            if *slot == Some(mac) {
+                *slot = None;
+                break;
+            }
+        }
+        if let Err(e) = self.ops.del(self.ifindex, mac)
+            && e.kind() != io::ErrorKind::NotFound
+            && e.raw_os_error() != Some(nix::libc::ENODEV)
+        {
+            tracing::warn!("couldn't remove peer station {mac}: {e}");
+        }
+    }
+}
+
+impl<S: StationOps> Drop for PeerStations<S> {
+    fn drop(&mut self) {
+        for i in 0..MAX_PEER_STAS {
+            if let Some(mac) = self.slots[i].take() {
+                let _ = self.ops.del(self.ifindex, mac);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    #[derive(Default)]
+    struct FakeStations {
+        calls: Rc<RefCell<Vec<String>>>,
+        next_add: Option<io::ErrorKind>,
+        del_error: Option<i32>,
+    }
+
+    impl StationOps for FakeStations {
+        fn add(&mut self, ifindex: u32, mac: MacAddr, aid: u16) -> io::Result<()> {
+            self.calls
+                .borrow_mut()
+                .push(format!("add {ifindex} {mac} aid={aid}"));
+            if let Some(kind) = self.next_add.take() {
+                return Err(io::Error::new(kind, "injected"));
+            }
+            Ok(())
+        }
+
+        fn del(&mut self, ifindex: u32, mac: MacAddr) -> io::Result<()> {
+            self.calls.borrow_mut().push(format!("del {ifindex} {mac}"));
+            if let Some(errno) = self.del_error {
+                return Err(io::Error::from_raw_os_error(errno));
+            }
+            Ok(())
+        }
+    }
+
+    fn peer(n: u8) -> MacAddr {
+        MacAddr([0x02, 0, 0, 0, 0, n])
+    }
+
+    #[test]
+    fn pae_dest_sets_eth_p_pae_and_ifindex() {
+        let dest = pae_dest(17);
+        assert_eq!(dest.sll_family, nix::libc::AF_PACKET as u16);
+        assert_eq!(dest.sll_protocol, ETH_P_PAE.to_be());
+        assert_eq!(dest.sll_ifindex, 17);
+    }
+
+    #[test]
+    fn peer_stations_assigns_reuses_bounds_and_cleans_up_on_drop() {
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        {
+            let mut stas = PeerStations::new(
+                FakeStations {
+                    calls: calls.clone(),
+                    next_add: None,
+                    del_error: Some(nix::libc::ENODEV),
+                },
+                5,
+            );
+            // Idempotent add.
+            stas.add(peer(1));
+            stas.add(peer(1));
+            assert_eq!(calls.borrow().len(), 1);
+            assert_eq!(calls.borrow()[0], "add 5 02:00:00:00:00:01 aid=1");
+
+            // AlreadyExists still tracks the peer so it gets cleaned up on drop.
+            stas.ops.next_add = Some(io::ErrorKind::AlreadyExists);
+            stas.add(peer(2));
+            assert_eq!(stas.slots[1], Some(peer(2)));
+
+            // Other errors do not consume a slot.
+            stas.ops.next_add = Some(io::ErrorKind::PermissionDenied);
+            stas.add(peer(3));
+            assert_eq!(stas.slots[2], None);
+
+            // Remove frees AID 1 for reuse.
+            stas.remove(peer(1));
+            assert_eq!(stas.slots[0], None);
+            stas.add(peer(4));
+            assert_eq!(
+                calls.borrow().last().unwrap(),
+                "add 5 02:00:00:00:00:04 aid=1"
+            );
+
+            // Fill remaining slots up to MAX_PEER_STAS; an extra peer is skipped.
+            for n in 10..(10 + MAX_PEER_STAS as u8) {
+                stas.add(peer(n));
+            }
+            let before = calls.borrow().len();
+            stas.add(peer(200));
+            assert_eq!(calls.borrow().len(), before, "table full skips 33rd peer");
+        }
+        // Drop must emit a del for all MAX_PEER_STAS occupied slots.
+        let dels = calls
+            .borrow()
+            .iter()
+            .filter(|c| c.starts_with("del 5 "))
+            .count();
+        assert_eq!(dels, 1 + MAX_PEER_STAS);
+    }
 }

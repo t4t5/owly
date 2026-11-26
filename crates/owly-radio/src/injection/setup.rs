@@ -25,6 +25,8 @@ pub(crate) struct Prepared {
     pub mode: Mode,
     /// What to start owly-awdl with.
     pub awdl: owly_awdl::Config,
+    /// Linux-specific monitor injection and AP peer-station options.
+    pub native: crate::native::Options,
     pub announce: Announce,
     /// The hidden AP's hostapd, when the mode runs one.
     pub hostapd: Option<Child>,
@@ -243,9 +245,15 @@ impl Setup<'_> {
         }
         awdl.amsdu = self.settings.tx_amsdu;
         awdl.unicast_groups = self.station.quirk.unicast_groups;
+        let native = crate::native::Options {
+            tx_pae_fixrate: self.station.quirk.tx_pae_fixrate,
+            peer_sta_iface: (self.station.quirk.ap_peer_sta && hostapd.is_some())
+                .then(|| AP.to_string()),
+        };
         Prepared {
             mode,
             awdl,
+            native,
             announce,
             hostapd,
             rejoin: None,
@@ -430,8 +438,13 @@ impl Setup<'_> {
         let log = run.file("hostapd.log");
         for &f in freqs {
             let channel = social_channel(f).expect("a social channel");
-            write_hostapd_conf(&conf, channel)
-                .map_err(|e| Error::no_radio(format!("{}: {e}", conf.display())))?;
+            write_hostapd_conf(
+                &conf,
+                channel,
+                self.station.quirk.tx_pae_fixrate,
+                self.station.quirk.ap_peer_sta,
+            )
+            .map_err(|e| Error::no_radio(format!("{}: {e}", conf.display())))?;
             let mut child = spawn_hostapd(&hostapd, &conf, &log)
                 .map_err(|e| Error::no_radio(format!("Couldn't start hostapd: {e}")))?;
             let process = Process::of(child.id())
@@ -521,13 +534,28 @@ fn cell_mac(ops: &dyn Ops, iface: &str, mac: MacAddr) {
 
 /// A hidden, WPA2-protected AP with a random name and passphrase, so
 /// nothing ever joins it: it's there for its MAC to ACK the phone.
-fn write_hostapd_conf(path: &Path, channel: u8) -> std::io::Result<()> {
+fn write_hostapd_conf(
+    path: &Path,
+    channel: u8,
+    tx_pae_fixrate: bool,
+    ap_peer_sta: bool,
+) -> std::io::Result<()> {
     use std::io::Write;
     let mut random = [0u8; 20];
     std::io::Read::read_exact(&mut std::fs::File::open("/dev/urandom")?, &mut random)?;
     let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+    let mut extra = String::new();
+    if tx_pae_fixrate || ap_peer_sta {
+        extra.push_str("wmm_enabled=1\n");
+    }
+    // With ETH_P_PAE fixed-rate injection, mt76 picks the BSS's lowest basic
+    // rate (`ffs(conf->basic_rates) - 1`). Setting 24 Mbit/s (a mandatory
+    // 802.11a rate) on 5 GHz avoids 6 Mbit/s bottlenecking bulk transfers.
+    if tx_pae_fixrate && channel != 6 {
+        extra.push_str("supported_rates=60 90 120 180 240 360 480 540\nbasic_rates=240\n");
+    }
     let conf = format!(
-        "interface={AP}\ndriver=nl80211\nssid=owly-{}\nignore_broadcast_ssid=1\nhw_mode={}\nchannel={channel}\nieee80211n=1\nbeacon_int=1000\nwpa=2\nwpa_key_mgmt=WPA-PSK\nrsn_pairwise=CCMP\nwpa_passphrase={}\n",
+        "interface={AP}\ndriver=nl80211\nssid=owly-{}\nignore_broadcast_ssid=1\nhw_mode={}\nchannel={channel}\nieee80211n=1\n{extra}beacon_int=1000\nwpa=2\nwpa_key_mgmt=WPA-PSK\nrsn_pairwise=CCMP\nwpa_passphrase={}\n",
         hex(&random[..4]),
         if channel == 6 { "g" } else { "a" },
         hex(&random[4..]),

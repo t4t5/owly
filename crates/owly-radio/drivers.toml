@@ -42,6 +42,14 @@
 #                the driver can LDPC-encode injected frames, for owly-awdl's
 #                rate selection (not used yet)
 #                (default false)
+#   tx_pae_fixrate
+#                tag monitor injections with ETH_P_PAE (0x888e) via sendto so
+#                mac80211's control-port path sets IEEE80211_TX_CTL_USE_MINRATE
+#                and mt76 uses MT_TXD2_FIX_RATE OFDM on 5 GHz (default false)
+#   ap_peer_sta  register each valid AWDL peer as an unauthorized station
+#                (AUTHORIZED=0) on exclusive mode's hidden AP interface for a
+#                per-peer hardware WCID, cleaning up on peer expiry and stop
+#                (default false)
 #   issues       known problems, one sentence each, which the probe reports
 #   notes        the hardware, and what was observed
 
@@ -68,12 +76,14 @@ notes = "MediaTek MT7927 (TP-Link Archer TBE550E, 14c3:7927, kernel 7.2.9), on t
 
 [drivers.mt7921e]
 status = "untested"
-mode = "active-monitor"
-channels = [6]
+mode = "exclusive"
+mt76_pm_off = true
+tx_pae_fixrate = true
+ap_peer_sta = true
 issues = [
-    "This card sends injected unicast at 1 Mbit/s whatever rate is asked for, and not at all on 5 GHz, so discovery and the handshake often stall. Close and reopen the share sheet to retry.",
+    "Stock-kernel 5 GHz injection uses an opt-in hidden AP with ETH_P_PAE fixed-rate tagging and unauthorized peer STA entries (https://github.com/t4t5/owly/issues/14, https://github.com/t4t5/owly/issues/124); shared mode fails.",
 ]
-notes = "MediaTek MT7921 (14c3:7961, kernel 7.2.9) and MT7922 (14c3:0616, kernels 6.18 and 7.2.5). No ad-hoc mode. Both ways with an iPhone on channel 6, but not reliably: a full frame at 1 Mbit/s CCK fills most of the one slot in sixteen the phone spends on channel 6. Shared mode fails (https://github.com/t4t5/owly/issues/14). On 44, none of 132 injected unicast frames reached the air; on 6, 115 of 121 did."
+notes = "MediaTek MT7921 (14c3:7961) and MT7922 (14c3:0616, 14c3:7922). No ad-hoc mode, and stock mt7921e ignores radiotap rates on injected unicast data (falling back to 1 Mbit/s CCK and dropping on 5 GHz). Exclusive mode runs a hidden AP (hostapd) with ETH_P_PAE injection (triggering IEEE80211_TX_CTL_USE_MINRATE -> mt76 MT_TXD2_FIX_RATE at 24 Mbit/s OFDM on 5 GHz) and unauthorized nl80211 peer stations (AUTHORIZED=0) for per-peer WTBL WCIDs."
 
 [drivers.mt76x2u]
 status = "tested"
