@@ -40,6 +40,7 @@ pub mod ip;
 mod node;
 pub mod peer;
 pub mod rate;
+pub mod service;
 pub mod sync;
 pub mod tlv;
 mod wire;

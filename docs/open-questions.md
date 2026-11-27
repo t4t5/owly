@@ -12,7 +12,7 @@ What [the spec](SPEC.md) states that hasn't been confirmed by a capture of Apple
 8. What `/SharedIdentity` and `/Error` do, and whether a receiver must serve them for current senders (HTTP-4).
 9. The other keys, about 24, that Apple receivers publish in TXT, and whether any matter to Apple senders (MDNS-1).
 10. Whether an identity extracted from the user's own Mac gets accepted without a prompt on their iPhone (ASK-6).
-11. The layouts of the Service Response (2), Sync Tree (20) and Bloom Filter (22) TLVs (AWDL-6). The Service Response TLV would let a receiver skip the bursts of MDNS-7, and may be why an iPhone's mDNS doesn't reach a Linux node (DISC-5).
+11. The layouts of the Sync Tree (20) and Bloom Filter (22) TLVs (AWDL-6), and the Service Response TLV's name codes other than those in §3.2. Whether reading a peer's Service Response TLVs would spare the sender its probe (DISC-5): an iPhone's mDNS doesn't reach a Linux node.
 12. *Settled* (§6.4).
 13. What `SenderIdentityAuthTag` is, and whether Contacts Only receivers need it. It changes with each transfer, and isn't the BLE advertisement's tag (§6.4).
 14. What `IDSSessionID` and `ReceiverPseudonym` in the `/Discover` response, and `SenderPseudonym` and `SenderPushToken` in `/Upload`, are for (§6.3, §6.5).

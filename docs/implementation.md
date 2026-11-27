@@ -24,7 +24,7 @@ Accepting Block Ack (AWDL-15) only helps where the hardware answers A-MPDUs itse
 
 ## Workarounds
 
-**OWLY-1** (receiver, SHOULD) Owly's radio doesn't carry the receiver's records in the Service Response TLV, so the receiver announces in bursts (MDNS-7). The burst depends on the placement, so the radio layer chooses it, and it SHOULD be:
+**OWLY-1** (receiver, SHOULD) Owly's radio carries the receiver's records in the Service Response TLV (MDNS-2) only for as long as it hears the receiver announce them: `owly-awdl` reads them from the host's own mDNS responses, and drops them 15 s after the last. So the receiver announces in bursts all the same (MDNS-7), which also reach peers that don't read the TLV. The burst depends on the placement, so the radio layer chooses it, and it SHOULD be:
 
 | Placement | Copies | Apart | Pause between bursts |
 |---|---|---|---|
@@ -34,6 +34,7 @@ Accepting Block Ack (AWDL-15) only helps where the hardware answers A-MPDUs itse
 **OWLY-2** (SHOULD) A node SHOULD send each valid peer an ICMPv6 echo request, link-local to link-local, every 3 s, which makes Apple peers learn its neighbor entry. Its replies need not reach the IP stack.
 
 - **Finding a receiving iPhone (DISC-5):** an iPhone's mDNS doesn't reach a Linux node's `awdl0`, so Owly's sender also tries `/Discover` at each AWDL peer while it advertises over BLE, and keeps trying until the phone wakes. `owly browse` does the same when owlyd has the radio up.
+- **Records in action frames (MDNS-2):** `owly-awdl` carries only AirDrop's records, at most six, and a TXT record of up to 255 bytes: action frames have to stay small. While it carries them, its ARPA TLV names the host their SRV record does, rather than the computer's host name.
 - **Early SYNs (AWDL-18):** `owly-awdl` hands packets to the kernel's IP stack, whose SYN-ACK would wait on neighbor discovery, which AWDL doesn't carry. So it holds the SYN until the peer's neighbor entry exists.
 - **MAC address (AWDL-2):** if udev or NetworkManager rewrites `awdl0`'s MAC address, peers connect to an address the interface doesn't have. `owly-radio` pins it for the session.
 - **Firewall (NET-4):** host firewalls must let TCP `8771` in from `fe80::/10` on `awdl0`. `owly-radio`'s probe warns when ufw is on, `omdrop firewall install` adds the rule, and the NixOS module opens the port.
