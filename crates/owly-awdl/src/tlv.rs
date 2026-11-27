@@ -178,11 +178,20 @@ pub struct HtCapabilities {
 }
 
 impl HtCapabilities {
-    /// One spatial stream, all its MCS: what a node here announces.
+    /// One spatial stream, all its MCS: legacy default.
     pub const ONE_STREAM: HtCapabilities = HtCapabilities {
         capabilities: 0x11ce,
         ampdu_params: 0x1b,
         rx_mcs: 0xff,
+    };
+
+    /// Two spatial streams (MCS 0–15) with RX LDPC, 40 MHz, SMPS disabled,
+    /// SGI20/40, RX STBC 1, and 3839-byte max A-MSDU (safe for 4 KiB DMA RX
+    /// buffers).
+    pub const TWO_STREAM: HtCapabilities = HtCapabilities {
+        capabilities: 0x016f,
+        ampdu_params: 0x13,
+        rx_mcs: 0xffff,
     };
 
     /// The mask may be longer than one byte; bits past MCS 31 are
@@ -219,6 +228,49 @@ impl HtCapabilities {
     /// Short guard interval at 20 MHz.
     pub fn sgi20(&self) -> bool {
         self.capabilities & 0x0020 != 0
+    }
+}
+
+/// The VHT Capabilities IE carried inside an IEEE 802.11 Container TLV (17):
+/// IE ID `0xbf` (191), IE length `0x0c` (12), VHT Capabilities Info (4B LE),
+/// and Supported VHT-MCS and NSS Set (rx_mcs_map, rx_highest, tx_mcs_map,
+/// tx_highest).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VhtCapabilities {
+    pub capabilities: u32,
+    pub rx_mcs_map: u16,
+    pub rx_highest: u16,
+    pub tx_mcs_map: u16,
+    pub tx_highest: u16,
+}
+
+impl VhtCapabilities {
+    /// Two spatial streams at 80 MHz (MCS 0–9, 866.7 Mbps PHY), RX LDPC,
+    /// SGI80, RX STBC 1, Max A-MPDU Exp 7 (1 MiB), and Max MPDU 0 (3895 B,
+    /// safe for 4 KiB DMA RX buffers).
+    pub const TWO_STREAM_80MHZ: VhtCapabilities = VhtCapabilities {
+        capabilities: 0x0380_0130,
+        rx_mcs_map: 0xfffa,
+        rx_highest: 0,
+        tx_mcs_map: 0xfffa,
+        tx_highest: 0,
+    };
+
+    /// Parses a VHT Capabilities IE from an IEEE 802.11 Container TLV (17)
+    /// value (`0xbf 0x0c <12 bytes>`). Returns `Ok(None)` when the container
+    /// holds another 802.11 IE.
+    pub fn parse_container(value: &[u8]) -> Result<Option<VhtCapabilities>, Error> {
+        if value.len() < 14 || value[0] != 0xbf || value[1] != 0x0c {
+            return Ok(None);
+        }
+        let b = Bytes(value);
+        Ok(Some(VhtCapabilities {
+            capabilities: b.le32(2)?,
+            rx_mcs_map: b.le16(6)?,
+            rx_highest: b.le16(8)?,
+            tx_mcs_map: b.le16(10)?,
+            tx_highest: b.le16(12)?,
+        }))
     }
 }
 
@@ -299,6 +351,7 @@ pub struct Advert {
     /// Version, device class.
     pub version: Option<(u8, u8)>,
     pub ht: Option<HtCapabilities>,
+    pub vht: Option<VhtCapabilities>,
     pub data_path: Option<DataPathState>,
 }
 
@@ -325,6 +378,11 @@ impl Advert {
                 kind::ARPA => a.name = Some(parse_arpa(value)?),
                 kind::VERSION => a.version = Some(parse_version(value)?),
                 kind::HT_CAPABILITIES => a.ht = Some(HtCapabilities::parse(value)?),
+                kind::IEEE80211_CONTAINER => {
+                    if let Some(vht) = VhtCapabilities::parse_container(value)? {
+                        a.vht = Some(vht);
+                    }
+                }
                 kind::DATA_PATH_STATE => a.data_path = Some(DataPathState::parse(value)?),
                 // The sync tree's layout isn't known (docs/open-questions.md,
                 // item 11) and the election doesn't need it; the rest carry
@@ -352,6 +410,7 @@ pub struct Own<'a> {
     pub sequence: &'a Sequence,
     pub election: &'a crate::election::Election,
     pub ht: Option<HtCapabilities>,
+    pub vht: Option<VhtCapabilities>,
 }
 
 fn tlv(out: &mut Vec<u8>, kind: u8, value: impl FnOnce(&mut Vec<u8>)) {
@@ -445,8 +504,25 @@ pub fn put_ht_capabilities(out: &mut Vec<u8>, ht: &HtCapabilities) {
         v.le16(0);
         v.le16(ht.capabilities);
         v.u8(ht.ampdu_params);
-        v.u8(ht.rx_mcs as u8);
+        if ht.rx_mcs <= 0xff {
+            v.u8(ht.rx_mcs as u8);
+        } else {
+            v.le16(ht.rx_mcs as u16);
+        }
         v.le16(0);
+    });
+}
+
+/// The VHT Capabilities IE inside an IEEE 802.11 Container TLV (17).
+pub fn put_vht_capabilities(out: &mut Vec<u8>, vht: &VhtCapabilities) {
+    tlv(out, kind::IEEE80211_CONTAINER, |v| {
+        v.u8(0xbf);
+        v.u8(0x0c);
+        v.le32(vht.capabilities);
+        v.le16(vht.rx_mcs_map);
+        v.le16(vht.rx_highest);
+        v.le16(vht.tx_mcs_map);
+        v.le16(vht.tx_highest);
     });
 }
 
@@ -488,8 +564,9 @@ pub fn put_version(out: &mut Vec<u8>, devclass: u8) {
     });
 }
 
-/// A PSF's or MIF's TLVs, in legacy's order. Both carry the HT
-/// capabilities, as an iPhone's do; only MIFs carry the host name.
+/// A PSF's or MIF's TLVs, in Apple's canonical order. Both carry the HT
+/// and (on 5 GHz) VHT capabilities, as an iPhone's do; only MIFs carry the
+/// host name.
 pub fn put_all(out: &mut Vec<u8>, own: &Own, mif: bool) {
     put_sync_params(out, own);
     put_election_v1(out, own);
@@ -498,6 +575,11 @@ pub fn put_all(out: &mut Vec<u8>, own: &Own, mif: bool) {
     put_service_params(out);
     if let Some(ht) = &own.ht {
         put_ht_capabilities(out, ht);
+    }
+    if own.master_channel.0 > 14 {
+        if let Some(vht) = &own.vht {
+            put_vht_capabilities(out, vht);
+        }
     }
     if mif {
         put_arpa(out, own.name);
@@ -532,7 +614,8 @@ mod tests {
             psf_interval_tu: 110,
             sequence: &seq,
             election: &e,
-            ht: Some(HtCapabilities::ONE_STREAM),
+            ht: Some(HtCapabilities::TWO_STREAM),
+            vht: Some(VhtCapabilities::TWO_STREAM_80MHZ),
         };
         let mut out = Vec::new();
         put_all(&mut out, &own, mif);
@@ -544,7 +627,7 @@ mod tests {
     fn our_tlvs_parse_back() {
         let body = own_frame(true);
         let kinds: Vec<u8> = tlvs(&body).map(|t| t.unwrap().kind).collect();
-        assert_eq!(kinds, vec![4, 5, 18, 24, 6, 7, 16, 12, 21]);
+        assert_eq!(kinds, vec![4, 5, 18, 24, 6, 7, 17, 16, 12, 21]);
         let a = Advert::parse(&body).unwrap();
         let sync = a.sync.unwrap();
         assert_eq!(
@@ -559,14 +642,22 @@ mod tests {
         assert_eq!(a.sequence, Some(Sequence::fixed(Channel(44))));
         assert_eq!(a.name.as_deref(), Some("owly"));
         assert_eq!(a.version, Some((VERSION, devclass::MACOS)));
-        assert_eq!(a.ht, Some(HtCapabilities::ONE_STREAM));
+        assert_eq!(a.ht, Some(HtCapabilities::TWO_STREAM));
+        assert_eq!(a.vht, Some(VhtCapabilities::TWO_STREAM_80MHZ));
         assert_eq!(a.data_path.unwrap().country, Some(*b"X0\0"));
         // PSFs leave out only the name.
         let psf = own_frame(false);
         let kinds: Vec<u8> = tlvs(&psf).map(|t| t.unwrap().kind).collect();
-        assert_eq!(kinds, vec![4, 5, 18, 24, 6, 7, 12, 21]);
+        assert_eq!(kinds, vec![4, 5, 18, 24, 6, 7, 17, 12, 21]);
         let psf = Advert::parse(&psf).unwrap();
-        assert_eq!((psf.name, psf.ht), (None, Some(HtCapabilities::ONE_STREAM)));
+        assert_eq!(
+            (psf.name, psf.ht, psf.vht),
+            (
+                None,
+                Some(HtCapabilities::TWO_STREAM),
+                Some(VhtCapabilities::TWO_STREAM_80MHZ)
+            )
+        );
     }
 
     #[test]
@@ -574,9 +665,90 @@ mod tests {
         let body = own_frame(true);
         let lens: Vec<usize> = tlvs(&body).map(|t| t.unwrap().value.len()).collect();
         // sync 33 + sequence 38 + 2, election 21, sequence 38 + 3,
-        // election v2 40, service 9, HT 8, ARPA 4 + name, data path 15,
-        // version 2.
-        assert_eq!(lens, vec![73, 21, 41, 40, 9, 8, 8, 15, 2]);
+        // election v2 40, service 9, HT 9 (2SS), VHT 14, ARPA 4 + name,
+        // data path 15, version 2.
+        assert_eq!(lens, vec![73, 21, 41, 40, 9, 9, 14, 8, 15, 2]);
+    }
+
+    #[test]
+    fn vht_capabilities_wire_bytes_and_roundtrip() {
+        let mut out = Vec::new();
+        put_vht_capabilities(&mut out, &VhtCapabilities::TWO_STREAM_80MHZ);
+        assert_eq!(
+            out,
+            vec![
+                kind::IEEE80211_CONTAINER,
+                14,
+                0,
+                0xbf,
+                0x0c,
+                0x30,
+                0x01,
+                0x80,
+                0x03,
+                0xfa,
+                0xff,
+                0x00,
+                0x00,
+                0xfa,
+                0xff,
+                0x00,
+                0x00,
+            ]
+        );
+        let a = Advert::parse(&out).unwrap();
+        assert_eq!(a.vht, Some(VhtCapabilities::TWO_STREAM_80MHZ));
+
+        // 1-stream HT remains 8 bytes; 2-stream HT is 9 bytes.
+        let mut ht1 = Vec::new();
+        put_ht_capabilities(&mut ht1, &HtCapabilities::ONE_STREAM);
+        assert_eq!(tlvs(&ht1).next().unwrap().unwrap().value.len(), 8);
+        assert_eq!(
+            Advert::parse(&ht1).unwrap().ht,
+            Some(HtCapabilities::ONE_STREAM)
+        );
+
+        let mut ht2 = Vec::new();
+        put_ht_capabilities(&mut ht2, &HtCapabilities::TWO_STREAM);
+        assert_eq!(
+            tlvs(&ht2).next().unwrap().unwrap().value,
+            &[0x00, 0x00, 0x6f, 0x01, 0x13, 0xff, 0xff, 0x00, 0x00]
+        );
+        assert_eq!(
+            Advert::parse(&ht2).unwrap().ht,
+            Some(HtCapabilities::TWO_STREAM)
+        );
+        assert_eq!(HtCapabilities::TWO_STREAM.max_amsdu(), 3839);
+
+        // Non-VHT IEEE 802.11 containers are ignored cleanly.
+        let other_ie = [kind::IEEE80211_CONTAINER, 4, 0, 0x2d, 0x02, 0x00, 0x00];
+        assert_eq!(Advert::parse(&other_ie).unwrap().vht, None);
+
+        // 2.4 GHz frames do not emit VHT Capabilities TLV 17.
+        let mac = MacAddr([2, 0, 0, 0, 0, 1]);
+        let seq = Sequence::fixed(Channel(6));
+        let e = Election::own(mac);
+        let own2g = Own {
+            addr: mac,
+            name: "owly",
+            devclass: devclass::MACOS,
+            channel: 6,
+            master_channel: Channel(6),
+            next_tu: 20,
+            aw_counter: 1,
+            psf_interval_tu: 110,
+            sequence: &seq,
+            election: &e,
+            ht: Some(HtCapabilities::TWO_STREAM),
+            vht: Some(VhtCapabilities::TWO_STREAM_80MHZ),
+        };
+        let mut out2g = Vec::new();
+        put_all(&mut out2g, &own2g, false);
+        assert!(
+            !tlvs(&out2g)
+                .map(|t| t.unwrap().kind)
+                .any(|k| k == kind::IEEE80211_CONTAINER)
+        );
     }
 
     // spec: AWDL-5

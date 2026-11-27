@@ -10,14 +10,16 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use tokio::fs;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncWriteExt, BufWriter};
 
 use crate::proto::archive::extract::{RelPath, collision_name};
+
+const WRITE_BUF_BYTES: usize = 256 << 10;
 
 pub struct Staging {
     dir: tempfile::TempDir,
     dest: PathBuf,
-    file: Option<fs::File>,
+    file: Option<BufWriter<fs::File>>,
     /// Top-level names, in the order they arrived.
     top: Vec<String>,
 }
@@ -65,6 +67,7 @@ impl Staging {
     }
 
     pub async fn create_file(&mut self, path: &RelPath) -> io::Result<()> {
+        self.end_file().await?;
         let path = self.join(path);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).await?;
@@ -73,7 +76,10 @@ impl Staging {
         options.write(true).create_new(true);
         #[cfg(unix)]
         options.mode(0o644);
-        self.file = Some(options.open(path).await?);
+        self.file = Some(BufWriter::with_capacity(
+            WRITE_BUF_BYTES,
+            options.open(path).await?,
+        ));
         Ok(())
     }
 
