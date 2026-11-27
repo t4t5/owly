@@ -30,6 +30,7 @@ use owlyd::api::{self, LinkInfo, RadioProxy};
 use tokio::io::AsyncBufReadExt;
 
 use crate::bluez::{BluezAdvertiser, Registration};
+use crate::json::{self, Event as JsonEvent};
 
 /// Apple's receivers listen here (MDNS-1), and an AWDL peer with no mDNS
 /// is tried here (DISC-5).
@@ -53,6 +54,9 @@ pub struct On {
 
 #[derive(clap::Args)]
 pub struct ReceiveArgs {
+    /// Emit JSON Lines events; read {"id":N,"accept":true/false} from stdin.
+    #[arg(long, conflicts_with = "accept")]
+    json: bool,
     #[command(flatten)]
     on: On,
     /// Where received files go.
@@ -75,6 +79,9 @@ pub struct ReceiveArgs {
 
 #[derive(clap::Args)]
 pub struct BrowseArgs {
+    /// Emit one JSON object per discovered receiver.
+    #[arg(long)]
+    json: bool,
     #[command(flatten)]
     on: On,
     /// How long to browse.
@@ -152,27 +159,35 @@ pub async fn browse(bus: Option<&str>, args: BrowseArgs) -> Result<ExitCode, Str
             .inspect_err(|e| eprintln!("not trying the radio's AWDL peers: {e}"))
             .ok();
         let seen = std::cell::RefCell::new(std::collections::HashSet::new());
+        let output_error = std::cell::RefCell::new(None);
         let show = |r: &Listed| {
             if seen.borrow_mut().insert(r.addr) {
-                println!("{:<14} {:?} ({})", r.instance, r.name, r.addr);
+                if args.json {
+                    if let Err(e) = json::write_event(
+                        &mut io::stdout(),
+                        &JsonEvent::Receiver {
+                            id: r.instance.clone(),
+                            name: r.name.clone(),
+                            address: r.addr.to_string(),
+                        },
+                    ) {
+                        *output_error.borrow_mut() = Some(e);
+                    }
+                } else {
+                    println!("{:<14} {:?} ({})", r.instance, r.name, r.addr);
+                }
             }
+            output_error.borrow().is_some()
         };
         let by_peers = async {
             if let Some(lease) = &lease {
-                discover_peers(&iface, &sender, lease, deadline, |r| {
-                    show(&r);
-                    false
-                })
-                .await;
+                discover_peers(&iface, &sender, lease, deadline, |r| show(&r)).await;
             }
         };
-        let (by_mdns, ()) = tokio::join!(
-            browse_receivers(&iface, &sender, limit, |r| {
-                show(r);
-                false
-            }),
-            by_peers
-        );
+        let (by_mdns, ()) = tokio::join!(browse_receivers(&iface, &sender, limit, show), by_peers);
+        if let Some(error) = output_error.into_inner() {
+            return Err(error);
+        }
         // Without a lease, mDNS was the only way to find anyone.
         match by_mdns {
             Err(e) if lease.is_none() => return Err(e),
@@ -686,6 +701,14 @@ async fn run_receiver(
         iface.addr
     );
 
+    if args.json {
+        let input = tokio::io::BufReader::new(tokio::io::stdin());
+        tokio::select! {
+            result = json::receive(events, input, io::stdout()) => result?,
+            _ = tokio::signal::ctrl_c() => {},
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
     let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
     loop {
         let event = tokio::select! {
