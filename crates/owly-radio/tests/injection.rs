@@ -513,12 +513,19 @@ fn intel(o: &mut FakeOps) {
 }
 
 /// The XPS 9320's AX211: concurrent, a P2P group owner on a channel of its
-/// own beside a station on channel 36.
+/// own beside a station on channel 36. Ad-hoc too, for exclusive mode with
+/// Wi-Fi disconnected.
 fn ax211(o: &mut FakeOps) {
     o.driver = "iwlwifi".into();
     o.device = Some("8086:51f0".into());
     let mut w = o.wiphy.lock().unwrap();
-    w.iftypes = vec![IfType::Station, IfType::P2pGo, IfType::Monitor];
+    w.iftypes = vec![
+        IfType::Adhoc,
+        IfType::Station,
+        IfType::Ap,
+        IfType::P2pGo,
+        IfType::Monitor,
+    ];
     w.combinations = vec![Combination {
         limits: vec![(1, vec![IfType::Station]), (1, vec![IfType::P2pGo])],
         max: 2,
@@ -1094,10 +1101,12 @@ fn probe_explains_concurrent_cards() {
     assert_eq!(caps.channel, Some(6));
     assert!(caps.card.unwrap().go_beside_station);
 
+    // With Wi-Fi disconnected there's nothing to keep up: exclusive mode.
     fx.ops.ifaces.lock().unwrap().get_mut(STATION).unwrap().freq = None;
     let caps = fx.backend().probe();
-    assert_eq!(caps.missing[0].id, "radio");
-    assert!(caps.missing[0].say.contains("isn't connected"), "{caps:?}");
+    assert_eq!(caps.missing, [], "{caps:?}");
+    assert_eq!(caps.mode, Some(Mode::Exclusive));
+    assert!(caps.issues[0].contains("isn't connected"), "{caps:?}");
 
     // One channel at a time: the GO would have to sit on the AP's.
     let fx = Fx::with(|o| {
@@ -1163,13 +1172,18 @@ async fn concurrent_mode_runs_a_go_beside_the_station() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn concurrent_mode_needs_the_station_connected() {
+async fn concurrent_mode_runs_exclusive_with_wi_fi_disconnected() {
     let fx = Fx::with(ax211);
     fx.ops.ifaces.lock().unwrap().get_mut(STATION).unwrap().freq = None;
-    let e = fx.backend().up().await.unwrap_err();
-    assert_eq!(e.kind, ErrorKind::NotNow);
-    assert!(e.message.contains("isn't connected"), "{e}");
-    assert!(fx.ops.calls().is_empty(), "{:?}", fx.ops.calls());
+    let mut backend = fx.backend();
+    let link = backend.up().await.unwrap();
+    // Exclusive mode's cell, on the station's MAC, and no group owner.
+    assert_eq!(link.mac, STATION_MAC.parse().unwrap());
+    let calls = fx.ops.calls();
+    assert!(!calls.iter().any(|c| c.contains(GO)), "{calls:?}");
+    assert!(calls.iter().any(|c| c.starts_with("join ")), "{calls:?}");
+    backend.down().await.unwrap();
+    assert_eq!(fx.journal(), None);
 }
 
 #[tokio::test(flavor = "multi_thread")]

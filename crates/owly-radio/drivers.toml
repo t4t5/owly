@@ -97,7 +97,7 @@ status = "tested"
 mode = "concurrent"
 channels = [6]
 issues = [
-    "Needs Wi-Fi connected; the radio stops if Wi-Fi roams or its gateway stops answering.",
+    "The radio stops if Wi-Fi roams or its gateway stops answering.",
 ]
 notes = "Intel AX211 (XPS 9320, 8086:51f0, kernel 7.2.8, firmware 89.d2579d43.0), with legacy omdrop-owl's version of this mode: Wi-Fi stayed on 36 with the GO on 6, and both directions worked with an iPhone. One 3.4 MB photo from the phone stalled (HTTP 408). The driver warns about injecting while unassociated."
 

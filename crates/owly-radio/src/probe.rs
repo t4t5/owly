@@ -140,12 +140,21 @@ pub fn find_station(ops: &dyn Ops, settings: &Settings) -> Result<Station, Missi
         .phy(&name)
         .ok_or_else(|| missing("hardware", format!("{name} has no Wi-Fi radio behind it.")))?;
     let wiphy = ops.wiphy(&phy);
+    let mut quirk = quirk.clone();
+    // Concurrent mode keeps Wi-Fi connected; with none to keep, exclusive
+    // mode runs instead, as it did on these cards before.
+    if quirk.mode == Mode::Concurrent && ops.link_freq(&name).is_none() {
+        quirk.mode = Mode::Exclusive;
+        quirk.issues = vec![
+            "Wi-Fi isn't connected, so AirDrop runs in exclusive mode. Connected, it runs beside Wi-Fi and keeps it up.".into(),
+        ];
+    }
     Ok(Station {
         name,
         driver,
         device,
         phy,
-        quirk: quirk.clone(),
+        quirk,
         source,
         wiphy,
     })
@@ -293,11 +302,6 @@ pub fn capabilities(ops: &dyn Ops, settings: &Settings) -> Capabilities {
             if caps.channel.is_none() {
                 caps.missing
                     .push(missing("radio", no_channel(settings, card)));
-            } else if ops.link_freq(&station.name).is_none() {
-                caps.missing.push(missing(
-                    "radio",
-                    "Wi-Fi isn't connected, and this card's AirDrop runs beside it. Connect to Wi-Fi first.",
-                ));
             }
         }
         Mode::Exclusive | Mode::ActiveMonitor => {

@@ -176,7 +176,7 @@ owlyd reads `/etc/owly/radio.toml` and `/etc/owly/drivers.toml` again for each `
 
 **Active monitor.** For cards with neither, such as the MediaTek MT7612U and MT7921: an active monitor carrying the station's MAC ACKs in place of the cell.
 
-**Concurrent.** For Intel cards whose firmware can run a second channel beside the station's, so far the AX211 `8086:51f0`. Wi-Fi stays connected on whatever channel the AP uses, and a P2P group owner (`owlygo0`) on channel 6 ACKs the phone's frames. The radio stops if Wi-Fi disconnects or roams. To use exclusive mode instead, copy the `iwlwifi` entry to `/etc/owly/drivers.toml` as `[devices."8086:51f0"]`.
+**Concurrent.** For Intel cards whose firmware can run a second channel beside the station's, so far the AX211 `8086:51f0`. Wi-Fi stays connected on whatever channel the AP uses, and a P2P group owner (`owlygo0`) on channel 6 ACKs the phone's frames. With Wi-Fi disconnected it runs exclusive mode instead, and the radio stops if Wi-Fi disconnects or roams during a session. To always use exclusive mode, copy the `iwlwifi` entry to `/etc/owly/drivers.toml` as `[devices."8086:51f0"]`.
 
 A USB adapter can run exclusive mode as a second card while the built-in one stays connected: set `station` to the adapter in `/etc/owly/radio.toml` and disconnect it (`nmcli device disconnect <adapter>`).
 
