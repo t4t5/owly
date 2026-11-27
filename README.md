@@ -116,7 +116,7 @@ Make sure you set your phone's Airdrop setting to "Everyone for 10 minutes".
 | Realtek RTL8822BE | `rtw88_8822be` | ✅ Exclusive; shared untested | Crosshair VII Hero, `10ec:b822`, NixOS 26.11 (kernel 7.2.9) |
 | Realtek RTL8851BE | `rtw89_8851be` | ✅ Shared | ASUSTeK COMPUTER INC. ASUS Vivobook 14 X1404VAPBF_X1404VA, `10ec:b851`, openSUSE Tumbleweed (kernel 7.3.0) |
 | Realtek RTL8852AE | `rtw89_8852ae` | ✅ Shared | • ThinkPad P14s Gen 2a, `10ec:8852`, Ubuntu 26.04.1 (kernel 7.0)<br>• LENOVO ThinkPad T14 Gen 2a, `10ec:8852`, Omarchy (kernel 7.2.8) |
-| Realtek RTL8852BE | `rtw89_8852be` | ✅ Shared | ASUS PRIME B550M-A WIFI II, `10ec:b852`, CachyOS (kernel 7.2.9) |
+| Realtek RTL8852BE | `rtw89_8852be` | ✅ Exclusive | • ASUS PRIME B550M-A WIFI II, `10ec:b852`, CachyOS (kernel 7.2.9)<br>• LENOVO ThinkBook 16 G4+ ARA, `10ec:b852`, Arch Linux (kernel 7.3.5), shared<br>• LENOVO ThinkBook 16 G4+ ARA, `10ec:b852`, Arch Linux (kernel 7.3.5), exclusive |
 | Realtek RTL8852CE | `rtw89_8852ce` | ✅ Shared and exclusive | • Legion Slim 5 16AHP9, `10ec:c852`, Omarchy 4.0.4 (kernel 7.2.5)<br>• ThinkBook 16 G7 IML, `10ec:c852`, Ubuntu 24.04.5 (kernel 7.0) |
 | Realtek RTL8922AE | `rtw89_8922ae` | ✅ Exclusive | ASUS System Version, `10ec:8922`, CachyOS (kernel 7.3.0) |
 | Realtek RTL8188FTV (USB) | `rtl8xxxu` | ✅ Exclusive (opt-in) | • INTEL H81, `0bda:f179`, Linux Mint 22.3 (kernel 6.14.0): partly<br>• LENOVO ThinkPad T495, `0bda:f179`, Fedora Linux 44 (kernel 6.19.10) |
