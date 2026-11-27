@@ -97,9 +97,9 @@ status = "tested"
 mode = "concurrent"
 channels = [6]
 issues = [
-    "Concurrent mode needs Wi-Fi connected, with an IPv4 gateway that answers ping; the radio stops if Wi-Fi roams or the gateway stops answering three times running.",
+    "Needs Wi-Fi connected; the radio stops if Wi-Fi roams or its gateway stops answering.",
 ]
-notes = "Intel AX211 (XPS 9320, 8086:51f0, kernel 7.2.8, firmware 89.d2579d43.0), with legacy omdrop-owl's connected GO mode, which this mode ports. Wi-Fi stayed associated on channel 36 and the GO ran on 6, with the stock driver. With an iPhone 16 Pro (iOS 26.6.2): a 272,892-byte PNG to it in 3.14 s, a 402,031-byte JPEG and a 3,853,909-byte PNG from it (the latter in about 17 s), and all 1,200 gateway pings in ten minutes answered. An earlier 3,369,948-byte photo from it stalled near the end and timed out (HTTP 408). The driver logs a warning about injecting while unassociated. Other AX211 IDs, roaming, suspend and long transfers are untested here; exclusive mode, the iwlwifi entry, worked on this card too."
+notes = "Intel AX211 (XPS 9320, 8086:51f0, kernel 7.2.8, firmware 89.d2579d43.0), with legacy omdrop-owl's version of this mode: Wi-Fi stayed on 36 with the GO on 6, and both directions worked with an iPhone. One 3.4 MB photo from the phone stalled (HTTP 408). The driver warns about injecting while unassociated."
 
 [devices."8086:095a"]
 status = "broken"

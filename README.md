@@ -128,7 +128,7 @@ Make sure you set your phone's Airdrop setting to "Everyone for 10 minutes".
 | Intel AX200 | `iwlwifi` | ✅ Exclusive | • ThinkPad X1 Yoga, `8086:2723`, NixOS 26.05 (kernel 6.19.8)<br>• Micro Computer (HK) Tech Limited MS-A2, `8086:2723`, NixOS 26.05 (kernel 7.2.5) |
 | Intel AX201 | `iwlwifi` | ✅ Exclusive | • Ubuntu 24.04 (kernel 6.8)<br>• CachyOS (kernel 7.2.9)<br>• Intel Client Systems NUC10i7FNK, `8086:02f0`, NixOS 26.05 (kernel 6.18.55) |
 | Intel AX210 | `iwlwifi` | ✅ Exclusive | Micro Computer (HK) Tech Limited MS-A2, `8086:2725`, NixOS 26.05 (kernel 7.2.5) |
-| Intel AX211 | `iwlwifi` | ✅ Exclusive; concurrent on `8086:51f0` | • ThinkPad X1, `8086:51f1`, Ubuntu 26.04 (kernel 7.0)<br>• XPS 9320, `8086:51f0`, Arch (kernel 7.2.3)<br>• XPS 9320, `8086:51f0`, Arch (kernel 7.2.8), concurrent<br>• Legion Pro 7 16IRX8H, `8086:7a70`, Omarchy 4.0.4 (kernel 7.2.3)<br>• TUXEDO InfinityBook Max 15 Gen10 (Arrow Lake), `8086:7740`, Kubuntu 26.04.1 (kernel 7.0) |
+| Intel AX211 | `iwlwifi` | ✅ Exclusive; concurrent on `8086:51f0` | • ThinkPad X1, `8086:51f1`, Ubuntu 26.04 (kernel 7.0)<br>• XPS 9320, `8086:51f0`, Arch (kernels 7.2.3 and 7.2.8)<br>• Legion Pro 7 16IRX8H, `8086:7a70`, Omarchy 4.0.4 (kernel 7.2.3)<br>• TUXEDO InfinityBook Max 15 Gen10 (Arrow Lake), `8086:7740`, Kubuntu 26.04.1 (kernel 7.0) |
 | Intel BE (Panther Lake) | `iwlwifi` | ✅ Exclusive | XPS 16, `8086:e440`, Arch (kernel 7.2) |
 | Intel BE200 | `iwlwifi` | ✅ Exclusive | • GEEKOM IT13 Max, `8086:272b`, Omarchy 4.0.4 (kernel 7.2.5)<br>• LENOVO Legion Pro 7 16IAX10H, `8086:272b`, Arch Linux (kernel 7.3.4) |
 | MediaTek MT7921 | `mt7921e` | ⚠️ Exclusive, opt-in; shared fails ([#14](https://github.com/t4t5/owly/issues/14)) | `14c3:7961`, CachyOS (kernel 7.2.9) |
@@ -176,7 +176,7 @@ owlyd reads `/etc/owly/radio.toml` and `/etc/owly/drivers.toml` again for each `
 
 **Active monitor.** For cards with neither, such as the MediaTek MT7612U and MT7921: an active monitor carrying the station's MAC ACKs in place of the cell.
 
-**Concurrent.** For the Intel AX211 `8086:51f0`, whose firmware can run a second channel beside the station's. Wi-Fi stays connected on whatever channel the AP uses, and a P2P group owner (`owlygo0`) on channel 6, on a random local MAC, ACKs the phone's frames; it takes no clients and serves no network. The monitor and AWDL use the same MAC. It needs a connected IPv4 gateway that answers ping, and the radio stops if Wi-Fi roams or the gateway stops answering. It never falls back to taking Wi-Fi down; to use exclusive mode on this card instead, copy the `iwlwifi` entry to `/etc/owly/drivers.toml` as `[devices."8086:51f0"]`.
+**Concurrent.** For Intel cards whose firmware can run a second channel beside the station's, so far the AX211 `8086:51f0`. Wi-Fi stays connected on whatever channel the AP uses, and a P2P group owner (`owlygo0`) on channel 6 ACKs the phone's frames. The radio stops if Wi-Fi disconnects or roams. To use exclusive mode instead, copy the `iwlwifi` entry to `/etc/owly/drivers.toml` as `[devices."8086:51f0"]`.
 
 A USB adapter can run exclusive mode as a second card while the built-in one stays connected: set `station` to the adapter in `/etc/owly/radio.toml` and disconnect it (`nmcli device disconnect <adapter>`).
 
