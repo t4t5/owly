@@ -40,6 +40,24 @@ const AIRDROP_PORT: u16 = 8770;
 /// port is the first reason a phone never lists us.
 const RECEIVE_PORT: u16 = 8771;
 
+/// Default device model name announced in AirDrop metadata.
+const DEFAULT_MODEL_NAME: &str = "Linux";
+
+/// Maximum UTF-8 byte length for `--model-name`.
+const MAX_MODEL_NAME_BYTES: usize = 64;
+
+fn parse_model_name(raw: &str) -> Result<String, String> {
+    if raw.is_empty() || raw.len() > MAX_MODEL_NAME_BYTES {
+        return Err(format!(
+            "model name must be 1..={MAX_MODEL_NAME_BYTES} bytes"
+        ));
+    }
+    if raw.chars().any(char::is_control) {
+        return Err("model name cannot contain control characters".into());
+    }
+    Ok(raw.to_string())
+}
+
 /// Where and as whom: the flags every AirDrop command takes.
 #[derive(clap::Args)]
 pub struct On {
@@ -49,6 +67,9 @@ pub struct On {
     /// The name others see (default: the host name).
     #[arg(long)]
     name: Option<String>,
+    /// The device model name announced in AirDrop metadata (default: Linux).
+    #[arg(long, value_parser = parse_model_name)]
+    model_name: Option<String>,
 }
 
 #[derive(clap::Args)]
@@ -111,6 +132,12 @@ pub struct SendArgs {
 }
 
 impl On {
+    fn model_name(&self) -> String {
+        self.model_name
+            .clone()
+            .unwrap_or_else(|| DEFAULT_MODEL_NAME.to_string())
+    }
+
     fn resolve(&self) -> io::Result<(Interface, String)> {
         // rustls needs a crypto provider chosen; ring is owly-cli's.
         let _ = rustls::crypto::ring::default_provider().install_default();
@@ -143,8 +170,11 @@ pub async fn receive(bus: Option<&str>, args: ReceiveArgs) -> Result<ExitCode, S
 pub async fn browse(bus: Option<&str>, args: BrowseArgs) -> Result<ExitCode, String> {
     async {
         let (iface, name) = args.on.resolve()?;
+        let model_name = args.on.model_name();
         let _advert = advertise(args.no_ble).await;
-        let sender = Sender::new(sender::Config::new(name, random_service_id()?))?;
+        let mut sender_config = sender::Config::new(name, random_service_id()?);
+        sender_config.model_name = model_name;
+        let sender = Sender::new(sender_config)?;
         let limit = Duration::from_secs(args.seconds);
         let deadline = tokio::time::Instant::now() + limit;
         let lease = Lease::find(bus, &iface.name)
@@ -201,6 +231,7 @@ async fn send_inner(bus: Option<&str>, args: SendArgs) -> io::Result<ExitCode> {
         files,
     } = args;
     let (iface, name) = on.resolve()?;
+    let model_name = on.model_name();
     let payload = match (url.is_empty(), files.is_empty()) {
         (false, true) => Payload::Urls(url),
         (true, false) => Payload::Files(
@@ -212,7 +243,9 @@ async fn send_inner(bus: Option<&str>, args: SendArgs) -> io::Result<ExitCode> {
         _ => return Err(io::Error::other("give either files or --url, not both")),
     };
     let _advert = advertise(no_ble).await;
-    let sender = Sender::new(sender::Config::new(name, random_service_id()?))?;
+    let mut sender_config = sender::Config::new(name, random_service_id()?);
+    sender_config.model_name = model_name;
+    let sender = Sender::new(sender_config)?;
     let target = match mac {
         Some(mac) => {
             let addr =
@@ -644,13 +677,14 @@ async fn run_receiver(
     args: ReceiveArgs,
 ) -> io::Result<ExitCode> {
     let ReceiveArgs {
+        on,
         dir,
         port,
         accept,
         no_mdns,
         flags,
-        ..
     } = args;
+    let model_name = on.model_name();
     let state = std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))
@@ -658,7 +692,7 @@ async fn run_receiver(
         .join("owly");
     let identity = Identity::load_or_generate(&state)?;
     let mut config = Config::new(name.clone());
-    config.model_name = "Linux".into();
+    config.model_name = model_name;
     let addr = SocketAddrV6::new(iface.addr, port, 0, iface.index);
     let (receiver, mut events) = Receiver::bind(addr, &identity, Options::new(config, dir)).await?;
     tokio::spawn(receiver.run());
@@ -773,6 +807,92 @@ mod tests {
         assert_eq!(
             no_peer(Some("Jane"), &others),
             r#"no AWDL peer answered as "Jane"; "Jane's iPhone", "Sam's Mac" did"#
+        );
+    }
+
+    #[test]
+    fn model_name_defaults_to_linux_and_validates_bounds() {
+        let default_on = On {
+            iface: "awdl0".into(),
+            name: Some("Linux Box".into()),
+            model_name: None,
+        };
+        assert_eq!(default_on.model_name(), "Linux");
+
+        let custom = parse_model_name("MacBookPro18,1").unwrap();
+        let custom_on = On {
+            iface: "awdl0".into(),
+            name: Some("Linux Box".into()),
+            model_name: Some(custom),
+        };
+        assert_eq!(custom_on.model_name(), "MacBookPro18,1");
+
+        assert_eq!(parse_model_name("MacPro7,1").unwrap(), "MacPro7,1");
+        assert_eq!(
+            parse_model_name("MacPro7,1@ECOLOR=226,226,224").unwrap(),
+            "MacPro7,1@ECOLOR=226,226,224"
+        );
+        assert_eq!(parse_model_name(&"a".repeat(64)).unwrap().len(), 64);
+
+        assert!(parse_model_name("").is_err());
+        assert!(parse_model_name(&"a".repeat(65)).is_err());
+        // 33 two-byte characters = 66 UTF-8 bytes (> 64-byte cap).
+        assert!(parse_model_name(&"é".repeat(33)).is_err());
+        for bad in [
+            "Bad\nName",
+            "Bad\rName",
+            "Bad\0Name",
+            "Bad\x1bName",
+            "Bad\x7fName",
+            "Bad\u{0085}Name",
+        ] {
+            assert!(
+                parse_model_name(bad).is_err(),
+                "expected {bad:?} to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn cli_parses_model_name_for_airdrop_subcommands() {
+        use clap::Parser;
+
+        let default_recv = crate::Cli::try_parse_from(["owly", "receive"]).unwrap();
+        let crate::Command::Receive(args) = default_recv.command else {
+            panic!("expected receive subcommand");
+        };
+        assert_eq!(args.on.model_name(), "Linux");
+
+        let custom_recv =
+            crate::Cli::try_parse_from(["owly", "receive", "--model-name", "MacPro7,1"]).unwrap();
+        let crate::Command::Receive(args) = custom_recv.command else {
+            panic!("expected receive subcommand");
+        };
+        assert_eq!(args.on.model_name(), "MacPro7,1");
+
+        let custom_send = crate::Cli::try_parse_from([
+            "owly",
+            "send",
+            "--model-name",
+            "MacBookPro18,1",
+            "photo.jpg",
+        ])
+        .unwrap();
+        let crate::Command::Send(args) = custom_send.command else {
+            panic!("expected send subcommand");
+        };
+        assert_eq!(args.on.model_name(), "MacBookPro18,1");
+
+        let custom_browse =
+            crate::Cli::try_parse_from(["owly", "browse", "--model-name", "Macmini9,1"]).unwrap();
+        let crate::Command::Browse(args) = custom_browse.command else {
+            panic!("expected browse subcommand");
+        };
+        assert_eq!(args.on.model_name(), "Macmini9,1");
+
+        assert!(crate::Cli::try_parse_from(["owly", "receive", "--model-name", ""]).is_err());
+        assert!(
+            crate::Cli::try_parse_from(["owly", "send", "--model-name", "Bad\nName", "a"]).is_err()
         );
     }
 }
