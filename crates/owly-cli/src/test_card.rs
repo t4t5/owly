@@ -21,11 +21,14 @@ use std::ffi::OsStr;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::{ExitCode, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use owlyd::api::{self, RadioProxy};
 use serde::Serialize;
-use tokio::process::Command;
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::process::{Child, Command};
+use tokio::task::JoinHandle;
 
 use crate::doctor;
 use crate::radio;
@@ -246,15 +249,7 @@ pub async fn run(bus: Option<&str>, args: Args) -> Result<ExitCode, String> {
         let _ = std::fs::create_dir_all(&dir);
         // It accepts by itself: its prompt would be hidden, and would
         // compete with this one for stdin.
-        receiver = Command::new(owly)
-            .args(["receive", "--accept", "--dir"])
-            .arg(&dir)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .kill_on_drop(true)
-            .spawn()
-            .ok();
+        receiver = ReceiverMonitor::spawn(owly, &dir);
         println!("receiving into {}", dir.display());
     }
     let window_ping = match &gateway {
@@ -286,9 +281,28 @@ pub async fn run(bus: Option<&str>, args: Args) -> Result<ExitCode, String> {
             None,
         );
     } else {
-        let shown = ask("Does this computer show up in the iPhone's AirDrop share sheet?");
+        let ask_with_receiver = |q: &str| match &receiver {
+            Some(r) => r.ask(q),
+            None => ask(q),
+        };
+        let shown =
+            ask_with_receiver("Does this computer show up in the iPhone's AirDrop share sheet?");
         report.step("shown on the phone", shown.result(), "", None);
-        let got = ask("Send a photo from the iPhone to this computer. Did it arrive?");
+        if let Some(r) = &receiver {
+            let received = r.received();
+            if received.is_empty() {
+                println!(
+                    "  (files save to {}; arrivals print below)",
+                    r.dir.display()
+                );
+            } else {
+                for line in &received {
+                    println!("  {}", format_received_line(line));
+                }
+            }
+        }
+        let got =
+            ask_with_receiver("Send a photo from the iPhone to this computer. Did it arrive?");
         report.step("phone -> computer", got.result(), "", None);
     }
 
@@ -799,6 +813,141 @@ impl Answer {
     }
 }
 
+struct ReceiverMonitor {
+    _child: Child,
+    dir: PathBuf,
+    received: Arc<Mutex<Vec<String>>>,
+    active_prompt: Arc<Mutex<Option<String>>>,
+    tasks: Vec<JoinHandle<()>>,
+}
+
+impl Drop for ReceiverMonitor {
+    fn drop(&mut self) {
+        for task in &self.tasks {
+            task.abort();
+        }
+    }
+}
+
+struct ActivePromptGuard<'a>(&'a Mutex<Option<String>>);
+
+impl Drop for ActivePromptGuard<'_> {
+    fn drop(&mut self) {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
+}
+
+impl ReceiverMonitor {
+    fn spawn(owly: &Path, dir: &Path) -> Option<Self> {
+        let child = Command::new(owly)
+            .args(["receive", "--accept", "--dir"])
+            .arg(dir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .ok()?;
+        Some(Self::from_child(child, dir.to_path_buf()))
+    }
+
+    fn from_child(mut child: Child, dir: PathBuf) -> Self {
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let active_prompt = Arc::new(Mutex::new(None));
+        let mut tasks = Vec::new();
+        if let Some(stdout) = child.stdout.take() {
+            let received_log = Arc::clone(&received);
+            let prompt_state = Arc::clone(&active_prompt);
+            tasks.push(tokio::spawn(async move {
+                let mut lines = BufReader::new(stdout).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    received_log
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(trimmed.to_string());
+                    print_async_notice(&prompt_state, &format_received_line(trimmed));
+                }
+            }));
+        }
+        if let Some(stderr) = child.stderr.take() {
+            let prompt_state = Arc::clone(&active_prompt);
+            tasks.push(tokio::spawn(async move {
+                let mut lines = BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if is_receiver_error(&line) {
+                        print_async_notice(&prompt_state, &format!("receiver: {}", line.trim()));
+                    }
+                }
+            }));
+        }
+        Self {
+            _child: child,
+            dir,
+            received,
+            active_prompt,
+            tasks,
+        }
+    }
+
+    fn received(&self) -> Vec<String> {
+        self.received
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn ask(&self, q: &str) -> Answer {
+        *self
+            .active_prompt
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(format!("{q} [y/n/s(kip)] "));
+        let _guard = ActivePromptGuard(&self.active_prompt);
+        ask(q)
+    }
+}
+
+fn print_async_notice(active_prompt: &Mutex<Option<String>>, message: &str) {
+    let prompt = active_prompt
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    let mut out = std::io::stdout().lock();
+    if let Some(prompt) = prompt {
+        let _ = writeln!(out, "\n  {message}");
+        let _ = write!(out, "{prompt}");
+    } else {
+        let _ = writeln!(out, "  {message}");
+    }
+    let _ = out.flush();
+}
+
+fn format_received_line(line: &str) -> String {
+    let trimmed = line.trim();
+    let path = Path::new(trimmed);
+    if let Ok(meta) = std::fs::metadata(path)
+        && meta.is_file()
+    {
+        return format!("received {:?} ({} bytes)", path, meta.len());
+    }
+    format!("received {trimmed:?}")
+}
+
+fn is_receiver_error(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.starts_with("owly:")
+        || trimmed.starts_with("transfer failed:")
+        || trimmed.starts_with("not announcing as the radio asks:")
+        || trimmed == "the request was withdrawn"
+}
+
 fn prompt(q: &str) -> String {
     print!("{q}");
     let _ = std::io::stdout().flush();
@@ -981,5 +1130,63 @@ no answer yet for icmp_seq=5
         assert_eq!(crc, crc32(&png[12..29]));
         assert_eq!(crc32(b"123456789"), 0xcbf4_3926);
         assert_eq!(adler32(b"Wikipedia"), 0x11e6_0398);
+    }
+
+    #[test]
+    fn format_received_line_includes_file_size_and_escapes_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("photo\x1b.jpg");
+        std::fs::write(&file, b"hello").unwrap();
+        let formatted = format_received_line(&file.to_string_lossy());
+        assert!(formatted.contains("received "));
+        assert!(formatted.contains("(5 bytes)"));
+        assert!(!formatted.contains('\x1b'));
+        assert_eq!(
+            format_received_line("https://example.com/\x1b"),
+            r#"received "https://example.com/\u{1b}""#
+        );
+    }
+
+    #[test]
+    fn receiver_stderr_filter_keeps_failures_and_skips_noise() {
+        assert!(is_receiver_error("owly: address already in use"));
+        assert!(is_receiver_error("transfer failed: broken pipe"));
+        assert!(is_receiver_error(
+            "not announcing as the radio asks: owlyd gone"
+        ));
+        assert!(is_receiver_error("  the request was withdrawn  "));
+        assert!(!is_receiver_error(
+            "receiving as \"host\" on [fe80::1]:8771"
+        ));
+        assert!(!is_receiver_error("seen by peer"));
+        assert!(!is_receiver_error("announcing 3 times 100 ms apart"));
+    }
+
+    #[tokio::test]
+    async fn receiver_monitor_captures_stdout_lines_from_child() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("IMG_0001.jpg");
+        std::fs::write(&file, b"jpeg-bytes").unwrap();
+        let child = Command::new("/bin/sh")
+            .args(["-c", "printf '%s\\n' \"$1\"", "_", &file.to_string_lossy()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let monitor = ReceiverMonitor::from_child(child, dir.path().to_path_buf());
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while tokio::time::Instant::now() < deadline {
+            if monitor
+                .received()
+                .iter()
+                .any(|l| l == &file.to_string_lossy())
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("expected stdout line in {:?}", monitor.received());
     }
 }
