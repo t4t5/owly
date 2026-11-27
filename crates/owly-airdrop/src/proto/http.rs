@@ -597,6 +597,11 @@ mod tests {
     }
 
     #[test]
+    fn declines_with_a_reason_phrase() {
+        assert!(response(401, &[], b"").starts_with(b"HTTP/1.1 401 Unauthorized\r\n"));
+    }
+
+    #[test]
     fn waits_for_a_whole_head() {
         assert_eq!(request("POST /Ask HTTP/1.1\r\nUser-Agent: x\r\n"), Ok(None));
     }
