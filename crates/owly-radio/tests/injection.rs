@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use owly_awdl::election::Ranking;
 use owly_awdl::{Presence, TxRate};
-use owly_radio::injection::{AP, Awdl, IBSS, Injection, MONITOR, Settings, StartAwdl};
+use owly_radio::injection::{AP, Awdl, GO, IBSS, Injection, MONITOR, Settings, StartAwdl};
 use owly_radio::journal::Step;
 use owly_radio::nl80211::{Channel, Combination, IfType, Kind, Wiphy};
 use owly_radio::quirks::{Mode, Quirks, Status};
@@ -54,6 +54,8 @@ struct FakeOps {
     fail_monitor: bool,
     /// UFW is on.
     ufw: bool,
+    /// The station's gateway answers a ping, while it's associated.
+    gateway: Mutex<bool>,
     /// NetworkManager reconnects by itself once it has the station back.
     autoconnect: bool,
     managed: Mutex<BTreeMap<String, bool>>,
@@ -115,6 +117,7 @@ impl FakeOps {
             ibss_refused: false,
             fail_monitor: false,
             ufw: false,
+            gateway: Mutex::new(true),
             autoconnect: true,
             managed: Mutex::new(BTreeMap::new()),
             ifaces: Mutex::new(ifaces),
@@ -159,6 +162,7 @@ fn kind_name(k: Kind) -> &'static str {
         Kind::Ap => "AP",
         Kind::Monitor { active: false } => "monitor",
         Kind::Monitor { active: true } => "active-monitor",
+        Kind::P2pGo => "P2P-GO",
     }
 }
 
@@ -216,7 +220,7 @@ impl Ops for FakeOps {
         self.ifaces.lock().unwrap().get(iface)?.freq
     }
     fn gateway_reachable(&self, iface: &str) -> bool {
-        self.link_freq(iface).is_some()
+        self.link_freq(iface).is_some() && *self.gateway.lock().unwrap()
     }
     fn regdom(&self) -> Option<String> {
         Some(self.regdom.lock().unwrap().clone())
@@ -299,6 +303,11 @@ impl Ops for FakeOps {
         if no_ir || !self.ibss_starts.contains(&freq) {
             return Err(io::Error::other("EINVAL"));
         }
+        self.ifaces.lock().unwrap().get_mut(iface).unwrap().freq = Some(freq);
+        Ok(())
+    }
+    fn start_go(&self, iface: &str, freq: u32, mac: MacAddr) -> io::Result<()> {
+        self.call(format!("go {iface} {freq} {mac}"));
         self.ifaces.lock().unwrap().get_mut(iface).unwrap().freq = Some(freq);
         Ok(())
     }
@@ -500,7 +509,22 @@ fn script(path: &Path, body: &str) {
 /// Intel: exclusive, channel 6.
 fn intel(o: &mut FakeOps) {
     o.driver = "iwlwifi".into();
+    o.device = Some("8086:51f1".into());
+}
+
+/// The XPS 9320's AX211: concurrent, a P2P group owner on a channel of its
+/// own beside a station on channel 36.
+fn ax211(o: &mut FakeOps) {
+    o.driver = "iwlwifi".into();
     o.device = Some("8086:51f0".into());
+    let mut w = o.wiphy.lock().unwrap();
+    w.iftypes = vec![IfType::Station, IfType::P2pGo, IfType::Monitor];
+    w.combinations = vec![Combination {
+        limits: vec![(1, vec![IfType::Station]), (1, vec![IfType::P2pGo])],
+        max: 2,
+        channels: 2,
+    }];
+    o.ifaces.lock().unwrap().get_mut(STATION).unwrap().freq = Some(5180);
 }
 
 /// The MT7612U: an active monitor, 149 first.
@@ -1058,6 +1082,128 @@ async fn exclusive_mode_keeps_the_aps_country() {
     assert_eq!(fx.awdl().radio.channel.0, 44);
     backend.down().await.unwrap();
     assert_eq!(fx.ops.regdom().as_deref(), Some("00"));
+}
+
+#[test]
+fn probe_explains_concurrent_cards() {
+    // Any AP channel will do: AWDL has a channel of its own.
+    let fx = Fx::with(ax211);
+    let caps = fx.backend().probe();
+    assert_eq!(caps.missing, [], "{caps:?}");
+    assert_eq!(caps.mode, Some(Mode::Concurrent));
+    assert_eq!(caps.channel, Some(6));
+    assert!(caps.card.unwrap().go_beside_station);
+
+    fx.ops.ifaces.lock().unwrap().get_mut(STATION).unwrap().freq = None;
+    let caps = fx.backend().probe();
+    assert_eq!(caps.missing[0].id, "radio");
+    assert!(caps.missing[0].say.contains("isn't connected"), "{caps:?}");
+
+    // One channel at a time: the GO would have to sit on the AP's.
+    let fx = Fx::with(|o| {
+        ax211(o);
+        o.wiphy.lock().unwrap().combinations[0].channels = 1;
+    });
+    let caps = fx.backend().probe();
+    assert_eq!(caps.missing[0].id, "hardware");
+    assert!(caps.missing[0].say.contains("group owner"), "{caps:?}");
+}
+
+// spec: AWDL-2, AWDL-12
+#[tokio::test(flavor = "multi_thread")]
+async fn concurrent_mode_runs_a_go_beside_the_station() {
+    let fx = Fx::with(ax211);
+    let mut backend = fx.backend();
+    let link = backend.up().await.unwrap();
+    let mac = link.mac;
+    assert_ne!(mac, STATION_MAC.parse().unwrap(), "the GO's own MAC");
+    assert_eq!(mac.0[0] & 0x03, 0x02, "locally administered unicast");
+    assert_eq!(link.announce, Some(Announce::FIXED));
+    let awdl = fx.awdl();
+    assert_eq!(awdl.addr, mac, "AWDL-2: the monitor's and awdl0's");
+    assert_eq!(awdl.radio.channel.0, 6);
+    assert_eq!(awdl.radio.presence, Presence::Fixed);
+    let calls = fx.ops.calls();
+    // The station is left alone.
+    assert_eq!(
+        calls,
+        [
+            format!("add phy0 {GO} P2P-GO"),
+            format!("sysctl net/ipv6/conf/{GO}/disable_ipv6=1"),
+            format!("mac {GO} {mac}"),
+            format!("up {GO}"),
+            format!("go {GO} 2437 {mac}"),
+            format!("add phy0 {MONITOR} monitor"),
+            format!("mac {MONITOR} {mac}"),
+            format!("up {MONITOR}"),
+        ]
+    );
+    assert_eq!(
+        fx.journal().unwrap(),
+        [
+            Step::Interface { name: GO.into() },
+            Step::Interface {
+                name: MONITOR.into()
+            },
+        ]
+    );
+
+    backend.down().await.unwrap();
+    assert_eq!(
+        fx.since(calls.len()),
+        [
+            format!("down {MONITOR}"),
+            format!("del {MONITOR}"),
+            format!("down {GO}"),
+            format!("del {GO}"),
+        ]
+    );
+    assert_eq!(fx.journal(), None);
+    assert_eq!(fx.ops.link_freq(STATION), Some(5180));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn concurrent_mode_needs_the_station_connected() {
+    let fx = Fx::with(ax211);
+    fx.ops.ifaces.lock().unwrap().get_mut(STATION).unwrap().freq = None;
+    let e = fx.backend().up().await.unwrap_err();
+    assert_eq!(e.kind, ErrorKind::NotNow);
+    assert!(e.message.contains("isn't connected"), "{e}");
+    assert!(fx.ops.calls().is_empty(), "{:?}", fx.ops.calls());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_station_leaving_or_its_gateway_going_quiet_loses_the_link() {
+    for (lose, says) in [
+        (
+            (|o: &FakeOps| o.ifaces.lock().unwrap().get_mut(STATION).unwrap().freq = Some(2412))
+                as fn(&FakeOps),
+            "left the AP",
+        ),
+        (
+            |o: &FakeOps| *o.gateway.lock().unwrap() = false,
+            "stopped answering",
+        ),
+    ] {
+        let fx = Fx::with(ax211);
+        let mut backend = fx.backend();
+        let link = backend.up().await.unwrap();
+        lose(&fx.ops);
+        let mut state = link.state.clone();
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            state.wait_for(|s| *s != LinkState::Up),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let LinkState::Lost(why) = state.borrow().clone() else {
+            unreachable!()
+        };
+        assert!(why.contains(says), "{why}");
+        backend.down().await.unwrap();
+        assert_eq!(fx.journal(), None);
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

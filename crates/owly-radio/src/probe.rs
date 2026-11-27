@@ -9,7 +9,7 @@ use crate::radio::{Capabilities, Missing};
 use serde::Serialize;
 
 use crate::injection::AWDL_IFACE;
-use crate::injection::{AP, IBSS, Injection, MONITOR, Settings};
+use crate::injection::{AP, GO, IBSS, Injection, MONITOR, Settings};
 use crate::nl80211::{IfType, Wiphy};
 use crate::quirks::{Mode, Quirk, Source, Status};
 use crate::rundir::RunDir;
@@ -71,7 +71,7 @@ impl Station {
 /// managed Wi-Fi interface. Refuses a card the quirks table doesn't mark
 /// tested unless allowed.
 pub fn find_station(ops: &dyn Ops, settings: &Settings) -> Result<Station, Missing> {
-    let ours = [AWDL_IFACE, MONITOR, IBSS, AP];
+    let ours = [AWDL_IFACE, MONITOR, IBSS, AP, GO];
     let name = match &settings.station {
         Some(s) if ops.exists(s) => Some(s.clone()),
         Some(_) => None,
@@ -168,6 +168,9 @@ pub struct Card {
     /// An ad-hoc interface beside the station; else exclusive mode makes
     /// the station itself the cell.
     pub ibss_beside_station: bool,
+    /// A P2P group owner beside the station, each on a channel of its own,
+    /// for concurrent mode.
+    pub go_beside_station: bool,
     /// The driver keeps its own regulatory domain (Intel's LAR).
     pub self_managed_reg: bool,
     /// The global regulatory domain.
@@ -216,6 +219,7 @@ pub fn card(ops: &dyn Ops, station: &Station) -> Option<Card> {
         active_monitor: w.active_monitor,
         monitor_beside_station: w.allows(&[IfType::Station, IfType::Monitor]),
         ibss_beside_station: w.allows(&[IfType::Station, IfType::Adhoc, IfType::Monitor]),
+        go_beside_station: w.allows_on(&[IfType::Station, IfType::P2pGo, IfType::Monitor], 2),
         self_managed_reg: w.self_managed_reg,
         regdom: ops.regdom(),
         channels,
@@ -281,6 +285,21 @@ pub fn capabilities(ops: &dyn Ops, settings: &Settings) -> Capabilities {
                 None => caps.missing.push(missing("radio", wrong_channel(f))),
             },
         },
+        Mode::Concurrent => {
+            caps.channel = station
+                .tx_channels(settings)
+                .first()
+                .and_then(|f| social_channel(*f));
+            if caps.channel.is_none() {
+                caps.missing
+                    .push(missing("radio", no_channel(settings, card)));
+            } else if ops.link_freq(&station.name).is_none() {
+                caps.missing.push(missing(
+                    "radio",
+                    "Wi-Fi isn't connected, and this card's AirDrop runs beside it. Connect to Wi-Fi first.",
+                ));
+            }
+        }
         Mode::Exclusive | Mode::ActiveMonitor => {
             let freqs = station.tx_channels(settings);
             caps.channel = freqs.first().and_then(|f| social_channel(*f));
@@ -319,6 +338,10 @@ fn mode_problem(station: &Station, settings: &Settings, card: &Card) -> Option<M
                 "This Wi-Fi card has no ad-hoc mode, so exclusive mode runs a hidden AP, which needs hostapd ({}). Install hostapd.",
                 settings.hostapd.display()
             ),
+        )),
+        Mode::Concurrent if !card.go_beside_station => Some(missing(
+            "hardware",
+            "This Wi-Fi card can't run a P2P group owner on a channel of its own beside its station, which concurrent mode needs.",
         )),
         Mode::ActiveMonitor if !card.active_monitor => Some(missing(
             "hardware",

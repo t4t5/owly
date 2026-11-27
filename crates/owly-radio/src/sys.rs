@@ -59,6 +59,8 @@ pub trait Ops: Send + Sync {
     /// Joins AWDL's BSSID as an HT20 ad-hoc cell on a fixed channel.
     fn join_ibss(&self, iface: &str, freq: u32) -> io::Result<()>;
     fn leave_ibss(&self, iface: &str) -> io::Result<()>;
+    /// Starts a P2P group owner on `freq` (HT20), beaconing as `mac`.
+    fn start_go(&self, iface: &str, freq: u32, mac: MacAddr) -> io::Result<()>;
     /// Sets `/proc/sys/<key>`, with `key` in slashes.
     fn sysctl(&self, key: &str, value: &str) -> io::Result<()>;
     /// mt76's debugfs directory for this wiphy.
@@ -265,6 +267,10 @@ impl Ops for System {
 
     fn leave_ibss(&self, iface: &str) -> io::Result<()> {
         Nl80211::open()?.leave_ibss(self.ifindex(iface)?)
+    }
+
+    fn start_go(&self, iface: &str, freq: u32, mac: MacAddr) -> io::Result<()> {
+        Nl80211::open()?.start_go(self.ifindex(iface)?, freq, mac)
     }
 
     fn sysctl(&self, key: &str, value: &str) -> io::Result<()> {

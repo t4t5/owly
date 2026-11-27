@@ -17,6 +17,7 @@ const CMD_GET_INTERFACE: u8 = 5;
 const CMD_SET_INTERFACE: u8 = 6;
 const CMD_NEW_INTERFACE: u8 = 7;
 const CMD_DEL_INTERFACE: u8 = 8;
+const CMD_START_AP: u8 = 15;
 const CMD_REQ_SET_REG: u8 = 27;
 const CMD_GET_REG: u8 = 31;
 const CMD_JOIN_IBSS: u8 = 43;
@@ -30,17 +31,26 @@ const ATTR_IFNAME: u16 = 4;
 const ATTR_IFTYPE: u16 = 5;
 const ATTR_MAC: u16 = 6;
 const ATTR_BEACON_INTERVAL: u16 = 12;
+const ATTR_DTIM_PERIOD: u16 = 13;
+const ATTR_BEACON_HEAD: u16 = 14;
+const ATTR_BEACON_TAIL: u16 = 15;
 const ATTR_WIPHY_BANDS: u16 = 22;
 const ATTR_MNTR_FLAGS: u16 = 23;
 const ATTR_SUPPORTED_IFTYPES: u16 = 32;
 const ATTR_REG_ALPHA2: u16 = 33;
+const ATTR_BSS_BASIC_RATES: u16 = 36;
 const ATTR_WIPHY_FREQ: u16 = 38;
 const ATTR_WIPHY_CHANNEL_TYPE: u16 = 39;
 const ATTR_SSID: u16 = 52;
+const ATTR_AUTH_TYPE: u16 = 53;
 const ATTR_FREQ_FIXED: u16 = 60;
+const ATTR_AP_ISOLATE: u16 = 96;
 const ATTR_INTERFACE_COMBINATIONS: u16 = 120;
 const ATTR_SOFTWARE_IFTYPES: u16 = 121;
+const ATTR_HIDDEN_SSID: u16 = 126;
 const ATTR_FEATURE_FLAGS: u16 = 143;
+const ATTR_CHANNEL_WIDTH: u16 = 159;
+const ATTR_CENTER_FREQ1: u16 = 160;
 const ATTR_SPLIT_WIPHY_DUMP: u16 = 174;
 const ATTR_WIPHY_SELF_MANAGED_REG: u16 = 216;
 const ATTR_MLO_LINKS: u16 = 312;
@@ -60,6 +70,9 @@ const LIMIT_TYPES: u16 = 2;
 const MNTR_FLAG_OTHER_BSS: u16 = 4;
 const MNTR_FLAG_ACTIVE: u16 = 6;
 const CHAN_HT20: u32 = 1;
+const CHAN_WIDTH_20: u32 = 1;
+const AUTHTYPE_OPEN_SYSTEM: u32 = 0;
+const HIDDEN_SSID_NOT_IN_USE: u32 = 0;
 const FEATURE_ACTIVE_MONITOR: u32 = 1 << 17;
 
 /// An interface type, as nl80211 numbers them.
@@ -69,6 +82,7 @@ pub enum IfType {
     Station,
     Ap,
     Monitor,
+    P2pGo,
     Other(u32),
 }
 
@@ -79,6 +93,7 @@ impl IfType {
             2 => IfType::Station,
             3 => IfType::Ap,
             6 => IfType::Monitor,
+            9 => IfType::P2pGo,
             n => IfType::Other(n),
         }
     }
@@ -89,6 +104,7 @@ impl IfType {
             IfType::Station => 2,
             IfType::Ap => 3,
             IfType::Monitor => 6,
+            IfType::P2pGo => 9,
             IfType::Other(n) => n,
         }
     }
@@ -100,6 +116,7 @@ impl IfType {
             IfType::Station => "managed".into(),
             IfType::Ap => "AP".into(),
             IfType::Monitor => "monitor".into(),
+            IfType::P2pGo => "P2P-GO".into(),
             IfType::Other(n) => format!("type {n}"),
         }
     }
@@ -133,9 +150,10 @@ pub struct Combination {
 }
 
 impl Combination {
-    /// Whether one interface of each type fits at once.
-    pub fn allows(&self, types: &[IfType]) -> bool {
-        if types.len() as u32 > self.max {
+    /// Whether one interface of each type fits at once, on up to
+    /// `channels` channels.
+    pub fn allows(&self, types: &[IfType], channels: u32) -> bool {
+        if types.len() as u32 > self.max || self.channels < channels {
             return false;
         }
         let mut left: Vec<u32> = self.limits.iter().map(|l| l.0).collect();
@@ -183,6 +201,12 @@ impl Wiphy {
 
     /// Whether interfaces of all these types may exist at once.
     pub fn allows(&self, types: &[IfType]) -> bool {
+        self.allows_on(types, 1)
+    }
+
+    /// Whether interfaces of all these types may exist at once, each on a
+    /// channel of its own where `channels` is more than one.
+    pub fn allows_on(&self, types: &[IfType], channels: u32) -> bool {
         if !types.iter().all(|t| self.supports(*t)) {
             return false;
         }
@@ -191,7 +215,11 @@ impl Wiphy {
             .copied()
             .filter(|t| !self.software.contains(t))
             .collect();
-        counted.len() <= 1 || self.combinations.iter().any(|c| c.allows(&counted))
+        (counted.len() <= 1 && channels <= 1)
+            || self
+                .combinations
+                .iter()
+                .any(|c| c.allows(&counted, channels))
     }
 
     pub fn channel(&self, freq: u32) -> Option<&Channel> {
@@ -310,6 +338,7 @@ pub enum Kind {
     Monitor {
         active: bool,
     },
+    P2pGo,
 }
 
 impl Kind {
@@ -319,6 +348,7 @@ impl Kind {
             Kind::Adhoc => IfType::Adhoc,
             Kind::Ap => IfType::Ap,
             Kind::Monitor { .. } => IfType::Monitor,
+            Kind::P2pGo => IfType::P2pGo,
         }
     }
 
@@ -447,6 +477,32 @@ impl Nl80211 {
         self.genl.request(CMD_LEAVE_IBSS, 0, &a).map(drop)
     }
 
+    /// Starts a P2P group owner on an HT20 channel, beaconing as `mac`.
+    /// It takes no clients: there's no authenticator behind it.
+    pub fn start_go(&mut self, ifindex: u32, freq: u32, mac: MacAddr) -> io::Result<()> {
+        let channel = if freq < 5000 {
+            (freq - 2407) / 5
+        } else {
+            (freq - 5000) / 5
+        };
+        let (head, tail) = go_beacon(mac, channel as u8);
+        let mut a = Attrs::new();
+        a.u32(ATTR_IFINDEX, ifindex)
+            .u32(ATTR_WIPHY_FREQ, freq)
+            .u32(ATTR_CHANNEL_WIDTH, CHAN_WIDTH_20)
+            .u32(ATTR_CENTER_FREQ1, freq)
+            .u32(ATTR_BEACON_INTERVAL, 100)
+            .u32(ATTR_DTIM_PERIOD, 2)
+            .bytes(ATTR_SSID, GO_SSID)
+            .u32(ATTR_HIDDEN_SSID, HIDDEN_SSID_NOT_IN_USE)
+            .u32(ATTR_AUTH_TYPE, AUTHTYPE_OPEN_SYSTEM)
+            .bytes(ATTR_BSS_BASIC_RATES, &GO_BASIC_RATES)
+            .u8(ATTR_AP_ISOLATE, 1)
+            .bytes(ATTR_BEACON_HEAD, &head)
+            .bytes(ATTR_BEACON_TAIL, &tail);
+        self.genl.request(CMD_START_AP, 0, &a).map(drop)
+    }
+
     /// Drops a station's association.
     pub fn disconnect(&mut self, ifindex: u32) -> io::Result<()> {
         let mut a = Attrs::new();
@@ -470,10 +526,85 @@ impl Nl80211 {
     }
 }
 
+const GO_SSID: &[u8] = b"DIRECT-owly";
+
+/// 6, 12 and 24 Mbit/s, in 500 kbit/s units. A P2P group sends no CCK.
+const GO_BASIC_RATES: [u8; 3] = [12, 24, 48];
+
+/// A P2P group owner's beacon on `channel`: the part before the TIM, and
+/// the part after it, as `NL80211_CMD_START_AP` takes them. OFDM rates only,
+/// one-stream HT20, and a P2P IE naming `mac` as the group owner.
+fn go_beacon(mac: MacAddr, channel: u8) -> (Vec<u8>, Vec<u8>) {
+    let mut head = vec![0x80, 0, 0, 0];
+    head.extend([0xff; 6]);
+    head.extend(mac.0);
+    head.extend(mac.0);
+    // Sequence control, timestamp, beacon interval (100 TU), and
+    // capabilities: ESS, short preamble, short slot time.
+    head.extend([0; 2 + 8]);
+    head.extend([100, 0, 0x21, 0x04]);
+    head.extend([0, GO_SSID.len() as u8]);
+    head.extend(GO_SSID);
+    // Supported rates: 6, 12 and 24 basic; 9, 18, 36, 48 and 54.
+    head.extend([1, 8, 0x8c, 0x12, 0x98, 0x24, 0xb0, 0x48, 0x60, 0x6c]);
+    if channel <= 14 {
+        head.extend([3, 1, channel]);
+    }
+
+    let mut tail = Vec::new();
+    // HT capabilities: A-MPDU parameters 0x1b, MCS 0-7.
+    let mut ht_cap = [0u8; 26];
+    ht_cap[2] = 0x1b;
+    ht_cap[3] = 0xff;
+    tail.extend([45, 26]);
+    tail.extend(ht_cap);
+    // HT operation: the primary channel, nothing else.
+    let mut ht_op = [0u8; 22];
+    ht_op[0] = channel;
+    tail.extend([61, 22]);
+    tail.extend(ht_op);
+    // P2P IE (Wi-Fi Alliance, type 9): capability (device 0, group owner),
+    // and the device ID.
+    tail.extend([221, 18, 0x50, 0x6f, 0x9a, 9, 2, 2, 0, 0, 1, 3, 6, 0]);
+    tail.extend(mac.0);
+    (head, tail)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::netlink::attr;
+
+    /// Element IDs, if `ies` is a well-formed run of elements.
+    fn elements(ies: &[u8]) -> Option<Vec<u8>> {
+        let mut ids = Vec::new();
+        let mut at = 0;
+        while at < ies.len() {
+            let len = usize::from(*ies.get(at + 1)?);
+            ies.get(at + 2..at + 2 + len)?;
+            ids.push(ies[at]);
+            at += 2 + len;
+        }
+        Some(ids)
+    }
+
+    #[test]
+    fn a_go_beacon_carries_its_address_in_well_formed_elements() {
+        let mac: MacAddr = "02:25:00:aa:00:01".parse().unwrap();
+        let (head, tail) = go_beacon(mac, 6);
+        assert_eq!(head[0], 0x80, "a beacon");
+        assert_eq!(&head[10..16], &mac.0, "source");
+        assert_eq!(&head[16..22], &mac.0, "BSSID");
+        assert_eq!(elements(&head[36..]).unwrap(), [0, 1, 3]);
+        assert_eq!(&head[38..38 + GO_SSID.len()], GO_SSID);
+        assert_eq!(head.last(), Some(&6), "DS parameter set");
+        assert_eq!(elements(&tail).unwrap(), [45, 61, 221]);
+        assert_eq!(&tail[tail.len() - 6..], &mac.0, "P2P device ID");
+
+        let (head, tail) = go_beacon(mac, 44);
+        assert_eq!(elements(&head[36..]).unwrap(), [0, 1], "no DS on 5 GHz");
+        assert_eq!(tail[2 + 26 + 2], 44, "HT operation's primary channel");
+    }
 
     fn monitor_flags(kind: Kind, new: bool) -> Option<Vec<u8>> {
         let mut a = Attrs::new();
@@ -601,8 +732,28 @@ mod tests {
             max: 2,
             channels: 1,
         };
-        assert!(c.allows(&[IfType::Ap, IfType::Station]));
-        assert!(!c.allows(&[IfType::Station, IfType::Station]));
+        assert!(c.allows(&[IfType::Ap, IfType::Station], 1));
+        assert!(!c.allows(&[IfType::Station, IfType::Station], 1));
+        assert!(!c.allows(&[IfType::Ap, IfType::Station], 2), "one channel");
+    }
+
+    #[test]
+    fn a_go_on_a_channel_of_its_own_needs_a_two_channel_combination() {
+        let mut w = Wiphy {
+            iftypes: vec![IfType::Station, IfType::P2pGo, IfType::Monitor],
+            software: vec![IfType::Monitor],
+            combinations: vec![Combination {
+                limits: vec![(1, vec![IfType::Station]), (1, vec![IfType::P2pGo])],
+                max: 2,
+                channels: 1,
+            }],
+            ..Wiphy::default()
+        };
+        let types = [IfType::Station, IfType::P2pGo, IfType::Monitor];
+        assert!(w.allows(&types));
+        assert!(!w.allows_on(&types, 2));
+        w.combinations[0].channels = 2;
+        assert!(w.allows_on(&types, 2));
     }
 
     #[test]

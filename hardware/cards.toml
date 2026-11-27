@@ -144,10 +144,11 @@ status = "❓ Exclusive untested"
 name = "Intel AX211"
 driver = "iwlwifi"
 ids = ["8086:51f1", "8086:51f0", "8086:7a70", "8086:7740"]
-status = "✅ Exclusive"
+status = "✅ Exclusive; concurrent on `8086:51f0`"
 tested_on = [
     "ThinkPad X1, `8086:51f1`, Ubuntu 26.04 (kernel 7.0)",
     "XPS 9320, `8086:51f0`, Arch (kernel 7.2.3)",
+    "XPS 9320, `8086:51f0`, Arch (kernel 7.2.8), concurrent",
     "Legion Pro 7 16IRX8H, `8086:7a70`, Omarchy 4.0.4 (kernel 7.2.3)",
     "TUXEDO InfinityBook Max 15 Gen10 (Arrow Lake), `8086:7740`, Kubuntu 26.04.1 (kernel 7.0)",
 ]
