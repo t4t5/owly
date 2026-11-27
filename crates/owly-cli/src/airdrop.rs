@@ -11,7 +11,7 @@
 use std::collections::BTreeSet;
 use std::io;
 use std::net::{Ipv6Addr, SocketAddrV6};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -370,6 +370,35 @@ fn random_service_id() -> io::Result<String> {
     Ok(mdns::service_id(bytes))
 }
 
+/// Keep the same published receiver identity across restarts (issue #125).
+fn receiver_service_id(state: &Path) -> io::Result<String> {
+    let path = state.join("receiver-id");
+    let read_id = || -> io::Result<String> {
+        let id = std::fs::read(&path)?.try_into().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "receiver-id must contain six bytes",
+            )
+        })?;
+        Ok(mdns::service_id(id))
+    };
+    match read_id() {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        result => return result,
+    }
+
+    let mut id = [0; 6];
+    getrandom::fill(&mut id).map_err(|e| io::Error::other(e.to_string()))?;
+    std::fs::create_dir_all(state)?;
+    let mut file = tempfile::NamedTempFile::new_in(state)?;
+    std::io::Write::write_all(&mut file, &id)?;
+    match file.persist_noclobber(path.as_path()) {
+        Ok(_) => Ok(mdns::service_id(id)),
+        Err(e) if e.error.kind() == io::ErrorKind::AlreadyExists => read_id(),
+        Err(e) => Err(e.error),
+    }
+}
+
 /// BLE-5: a fresh tag per advert.
 fn random_tag() -> io::Result<[u8; 3]> {
     let mut tag = [0; 3];
@@ -663,10 +692,10 @@ async fn run_receiver(
     let (receiver, mut events) = Receiver::bind(addr, &identity, Options::new(config, dir)).await?;
     tokio::spawn(receiver.run());
 
-    let service_id = random_service_id()?;
-    let _registration = if no_mdns {
+    let registration = if no_mdns {
         None
     } else {
+        let service_id = receiver_service_id(&state)?;
         let service = Service {
             instance: service_id.clone(),
             host: format!("owly-{service_id}"),
@@ -674,6 +703,7 @@ async fn run_receiver(
             addr: iface.addr,
             flags,
         };
+        eprintln!("mDNS instance {service_id}");
         Some(
             Mdns::new(iface.index)
                 .with_burst(burst)
@@ -682,7 +712,7 @@ async fn run_receiver(
         )
     };
     eprintln!(
-        "receiving as {name:?} ({service_id}) on [{}]:{port}, flags {flags:#x}",
+        "receiving as {name:?} on [{}]:{port}, flags {flags:#x}",
         iface.addr
     );
 
@@ -690,10 +720,10 @@ async fn run_receiver(
     loop {
         let event = tokio::select! {
             event = events.recv() => event,
-            _ = tokio::signal::ctrl_c() => return Ok(ExitCode::SUCCESS),
+            _ = tokio::signal::ctrl_c() => break,
         };
         let Some(event) = event else {
-            return Ok(ExitCode::SUCCESS);
+            break;
         };
         match event {
             ReceiverEvent::Discovered { peer, .. } => eprintln!("seen by {peer}"),
@@ -748,11 +778,72 @@ async fn run_receiver(
             ReceiverEvent::Failed { reason, .. } => eprintln!("transfer failed: {reason}"),
         }
     }
+    // A detached responder would be killed with the runtime before its
+    // goodbye goes out, leaving stale records on Apple peers (#125).
+    if let Some(registration) = registration {
+        match tokio::time::timeout(Duration::from_secs(2), registration.withdraw()).await {
+            Ok(result) => result?,
+            Err(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "mDNS withdrawal timed out",
+                ));
+            }
+        }
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_receiver_keeps_its_identity_across_restarts() {
+        let state = tempfile::tempdir().unwrap();
+        let first = receiver_service_id(state.path()).unwrap();
+        assert_eq!(first.len(), 12, "a service id is 12 hex digits");
+        assert_eq!(
+            receiver_service_id(state.path()).unwrap(),
+            first,
+            "a restart reuses the published instance"
+        );
+        let other = tempfile::tempdir().unwrap();
+        assert_ne!(
+            receiver_service_id(other.path()).unwrap(),
+            first,
+            "different state directories are different receivers"
+        );
+    }
+
+    #[test]
+    fn concurrent_receivers_use_the_same_persisted_id() {
+        let state = tempfile::tempdir().unwrap();
+        let start = std::sync::Barrier::new(8);
+        std::thread::scope(|scope| {
+            let receivers: Vec<_> = (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        start.wait();
+                        receiver_service_id(state.path()).unwrap()
+                    })
+                })
+                .collect();
+            let ids: Vec<_> = receivers.into_iter().map(|r| r.join().unwrap()).collect();
+            let persisted = receiver_service_id(state.path()).unwrap();
+            assert!(ids.iter().all(|id| id == &persisted));
+        });
+    }
+
+    #[test]
+    fn malformed_receiver_id_is_preserved() {
+        let state = tempfile::tempdir().unwrap();
+        let path = state.path().join("receiver-id");
+        std::fs::write(&path, b"short").unwrap();
+        let error = receiver_service_id(state.path()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(std::fs::read(path).unwrap(), b"short");
+    }
 
     #[test]
     fn straight_and_curly_apostrophes_name_the_same_receiver() {

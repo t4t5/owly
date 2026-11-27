@@ -1016,6 +1016,17 @@ mod tests {
     }
 
     #[test]
+    fn goodbye_withdraws_every_record() {
+        let bye = Message::decode(&service().goodbye()).unwrap();
+        assert!(bye.response);
+        assert_eq!(bye.answers.len(), 4);
+        assert!(
+            bye.answers.iter().all(|r| r.ttl == 0),
+            "RFC 6762 10.1: a goodbye carries TTL 0"
+        );
+    }
+
+    #[test]
     fn answers_queries() {
         let query = |name: Name, qtype| Message {
             questions: vec![Question {
