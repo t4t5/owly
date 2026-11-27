@@ -285,7 +285,7 @@ veth_test! {
                 assert_eq!(f.is_directory, w["is_directory"].as_bool().unwrap());
             }
             request.decline();
-            assert_eq!(c.response().await.unwrap().status, 403);
+            assert_eq!(c.response().await.unwrap().status, 401);
         }
     }
 }

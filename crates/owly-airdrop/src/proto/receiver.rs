@@ -234,7 +234,7 @@ impl Connection {
                 self.slots.ask = Some(ask);
             }
             // ASK-2: answer a decline rather than leave the sender waiting.
-            Answer::Decline => self.fail(403),
+            Answer::Decline => self.fail(401),
         }
     }
 

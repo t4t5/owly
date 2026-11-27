@@ -514,6 +514,7 @@ pub fn reason(status: u16) -> &'static str {
         100 => "Continue",
         200 => "OK",
         400 => "Bad Request",
+        401 => "Unauthorized",
         403 => "Forbidden",
         404 => "Not Found",
         406 => "Not Acceptable",
