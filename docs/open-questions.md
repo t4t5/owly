@@ -18,6 +18,7 @@ What [the spec](SPEC.md) states that hasn't been confirmed by a capture of Apple
 14. What `IDSSessionID` and `ReceiverPseudonym` in the `/Discover` response, and `SenderPseudonym` and `SenderPushToken` in `/Upload`, are for (§6.3, §6.5).
 15. Whether macOS receivers require the current `/Ask` form too (ASK-7).
 16. Whether Apple peers need the ICMPv6 echo of OWLY-2 to learn a node's neighbor entry, or something else Owly does already teaches them.
+17. Which statuses other than `401` senders take as a decline at once. iOS keeps waiting after a `403` until its own timeout, and macOS senders haven't been tried (ASK-2, ASK-2a).
 
 ## Sources
 

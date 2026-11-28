@@ -234,6 +234,9 @@ impl Connection {
                 self.slots.ask = Some(ask);
             }
             // ASK-2: answer a decline rather than leave the sender waiting.
+            // Deliberately without the `WWW-Authenticate` RFC 9110 asks a
+            // 401 to carry: this isn't an authentication challenge, and
+            // senders only read the status (ASK-1).
             Answer::Decline => self.fail(401),
         }
     }
@@ -748,6 +751,42 @@ mod tests {
             panic!("missing prompt")
         };
         assert!(matches!(request.offer, Offer::Files(files) if files.len() == 2));
+    }
+
+    /// The response to the prompt, once it's answered or timed out.
+    fn prompt_answer(connection: &mut Connection) -> Vec<u8> {
+        let mut answer = None;
+        while let Some(event) = connection.poll() {
+            if let Event::Transmit(bytes) = event {
+                answer = Some(bytes);
+            }
+        }
+        answer.expect("no response")
+    }
+
+    fn prompting() -> Connection {
+        let mut connection = Connection::new(Arc::new(Config::new("Receiver")));
+        connection.ask(&offered(&[("photo.jpg", "./photo.jpg", false)]));
+        assert!(matches!(connection.poll(), Some(Event::Ask(_))));
+        connection
+    }
+
+    // spec: ASK-2
+    #[test]
+    fn a_decline_is_answered_with_401() {
+        let mut connection = prompting();
+        connection.decline();
+        assert!(prompt_answer(&mut connection).starts_with(b"HTTP/1.1 401 Unauthorized\r\n"));
+        assert!(matches!(connection.state, State::Closed));
+    }
+
+    // spec: ASK-2
+    #[test]
+    fn a_prompt_that_times_out_is_answered_with_401() {
+        let mut connection = prompting();
+        connection.timeout();
+        assert!(prompt_answer(&mut connection).starts_with(b"HTTP/1.1 401 Unauthorized\r\n"));
+        assert!(matches!(connection.state, State::Closed));
     }
 
     // spec: ASK-5, SEC-1
