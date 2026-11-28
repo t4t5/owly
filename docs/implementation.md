@@ -8,7 +8,7 @@ Requirements here have IDs with the prefix `OWLY` and follow the spec's conventi
 
 - **Receiver port (MDNS-1):** Owly's receiver listens on TCP `8771`, the port omdrop's firewall rule opens on `awdl0`, and publishes it in SRV. The sender's probe under DISC-5 goes to `8770`, the port Apple devices listen on.
 - **TXT flags (MDNS-5):** `0x089`. DVZip isn't advertised, so Apple senders upload gzip.
-- **Decline (ASK-2):** a declined or timed-out `/Ask` gets `403`, then the connection is closed.
+- **Decline (ASK-2):** a declined or timed-out `/Ask` gets `401`, then the connection is closed.
 - **AWDL values:** Owly announces AWDL version 3.4; HT capability info `0x11ce`, A-MPDU parameters `0x1b` and RX MCS mask `0xff` (one stream); and Data Path State flags `0x8f24`, with country code `X0\0`, its master channel in the social channel map, its AWDL address and 2 bytes of extended flags.
 - **A-MSDU (AWDL-14):** at most 16 subframes are unpacked from a frame, and a frame with more is dropped.
 - **Identity (§7):** `owly-airdrop` doesn't implement Contacts Only. On Omarchy, omdrop-core does, with an identity extracted from the user's Mac by `seemoo-lab/airdrop-keychain-extractor`, since Linux has no way to get one of its own. `omdrop-plugin/docs/identity-contract.md` says how it's stored and presented.

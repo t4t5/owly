@@ -514,6 +514,7 @@ pub fn reason(status: u16) -> &'static str {
         100 => "Continue",
         200 => "OK",
         400 => "Bad Request",
+        401 => "Unauthorized",
         403 => "Forbidden",
         404 => "Not Found",
         406 => "Not Acceptable",
@@ -593,6 +594,11 @@ mod tests {
             Some("application/octet-stream")
         );
         assert_eq!(&text[n..], "rest");
+    }
+
+    #[test]
+    fn declines_with_a_reason_phrase() {
+        assert!(response(401, &[], b"").starts_with(b"HTTP/1.1 401 Unauthorized\r\n"));
     }
 
     #[test]

@@ -530,7 +530,7 @@ A link share in the current form carries `TransferType` `{"links": {}}`, the URL
 
 **ASK-1** `200` means accepted. Any other status, a closed connection, or no response within the sender's timeout means declined or failed, and the sender MUST NOT send `/Upload`.
 
-**ASK-2** (receiver) A receiver that prompts its user MUST hold the `/Ask` request open until the user answers or its own timeout passes. That timeout SHOULD be 15 s. Some receivers have none, and keep the prompt up until the sender gives up (ASK-2a). On a decline, or its own timeout, a receiver SHOULD respond with a non-200 status such as `401` or `403` and close the connection, so the sender doesn't wait out its own timeout. Some receivers send no response to a decline. Senders handle either under ASK-1.
+**ASK-2** (receiver) A receiver that prompts its user MUST hold the `/Ask` request open until the user answers or its own timeout passes. That timeout SHOULD be 15 s. Some receivers have none, and keep the prompt up until the sender gives up (ASK-2a). On a decline, or its own timeout, a receiver SHOULD respond with `401` and close the connection, so the sender doesn't wait out its own timeout. Some receivers send no response to a decline. Senders handle either under ASK-1.
 
 **ASK-2a** (sender) A sender MUST time out an unanswered `/Ask` and treat it as declined. The timeout MUST be longer than 15 s, so that a slow user isn't cut off before the receiver gives up. Senders wait about 45 s, then reset the connection and report the transfer as declined.
 
